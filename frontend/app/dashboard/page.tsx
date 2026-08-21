@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase";
 
 export default function Dashboard() {
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
+
+  const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -25,7 +27,9 @@ export default function Dashboard() {
 
   async function logout() {
     const supabase = createClient();
+
     await supabase.auth.signOut();
+
     router.replace("/");
   }
 
@@ -35,6 +39,10 @@ export default function Dashboard() {
         Loading...
       </main>
     );
+  }
+
+  if (!user) {
+    return null;
   }
 
   return (
@@ -59,7 +67,7 @@ export default function Dashboard() {
         </p>
 
         <p className="mb-6 text-gray-500">
-          {user.email}
+          {user.email || "No email available"}
         </p>
 
         <button

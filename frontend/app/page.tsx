@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase";
 
 export default function HomePage() {
   const router = useRouter();
+
   const [loading, setLoading] = useState(true);
   const [loggingIn, setLoggingIn] = useState(false);
 
@@ -13,8 +14,7 @@ export default function HomePage() {
     async function loadUser() {
       const supabase = createClient();
 
-      const { data, error } =
-        await supabase.auth.getUser();
+      const { data, error } = await supabase.auth.getUser();
 
       // No logged-in user is completely normal.
       if (error || !data.user) {
@@ -34,21 +34,25 @@ export default function HomePage() {
 
     const supabase = createClient();
 
-    const { error } =
-      await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo:
-            `${window.location.origin}/auth/callback`,
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+
+        // Request read-only Gmail access.
+        scopes: "https://www.googleapis.com/auth/gmail.readonly",
+
+        // Request offline access so the authorization
+        // can be used for backend Gmail processing.
+        queryParams: {
+          access_type: "offline",
+          prompt: "consent",
         },
-      });
+      },
+    });
 
     if (error) {
-      console.error(
-        "Google login error:",
-        error
-      );
-
+      console.error("Google login error:", error);
       setLoggingIn(false);
     }
   }
@@ -64,7 +68,6 @@ export default function HomePage() {
   return (
     <main className="min-h-screen flex items-center justify-center bg-black text-white p-8">
       <div className="w-full max-w-md text-center">
-
         <h1 className="text-4xl font-bold mb-4">
           Placement AI
         </h1>
@@ -82,7 +85,6 @@ export default function HomePage() {
             ? "Connecting..."
             : "Continue with Google"}
         </button>
-
       </div>
     </main>
   );
