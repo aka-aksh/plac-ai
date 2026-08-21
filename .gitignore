@@ -1,0 +1,21 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+
+# Next.js
+frontend/.next/
+frontend/node_modules/
+
+# Environment files
+frontend/.env*
+backend/.env*
