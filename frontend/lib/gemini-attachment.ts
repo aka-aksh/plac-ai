@@ -20,7 +20,7 @@ export type AttachmentExtraction = {
   apply_link: string | null;
   eligibility: string | null;
   next_action: string | null;
-  important_details: string | null;
+  summary: string | null;
   confidence: number;
 };
 
@@ -69,7 +69,7 @@ const attachmentSchema = {
     next_action: {
       type: ["string", "null"],
     },
-    important_details: {
+    summary: {
       type: ["string", "null"],
     },
     confidence: {
@@ -87,7 +87,7 @@ const attachmentSchema = {
     "apply_link",
     "eligibility",
     "next_action",
-    "important_details",
+    "summary",
     "confidence",
   ],
 };
@@ -121,6 +121,9 @@ RULES:
 - Never guess a deadline.
 - Never guess eligibility.
 - Missing information must be null.
+- summary must be a concise, factual summary of the opportunity details in
+  this document (maximum 500 characters). Do not include information that is
+  not explicitly stated in the document.
 - Preserve the exact year written for dates.
 - Deadline must use YYYY-MM-DD.
 - If the year is missing or ambiguous, deadline must be null.
@@ -179,6 +182,12 @@ ${text.slice(0, 100000)}
       result.confidence
     )
   );
+
+  if (result.summary !== null) {
+    result.summary = result.summary
+      .trim()
+      .slice(0, 500) || null;
+  }
 
   if (result.deadline !== null) {
     if (

@@ -5,11 +5,59 @@ import { saveGmailTokens } from "@/lib/gmail-storage";
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
 
+  const authErrorUrl = (
+    reason: string,
+    details?: { providerError?: string; providerDescription?: string | null }
+  ) => {
+    const url = new URL("/auth/error", origin);
+    url.searchParams.set("reason", reason);
+
+    if (details?.providerError) {
+      url.searchParams.set("provider_error", details.providerError.slice(0, 100));
+    }
+
+    if (details?.providerDescription) {
+      url.searchParams.set(
+        "provider_error_description",
+        details.providerDescription.slice(0, 500)
+      );
+    }
+
+    return url.toString();
+  };
+
   const code = searchParams.get("code");
+  const providerError = searchParams.get("error");
+  const providerErrorDescription = searchParams.get("error_description");
+
+  if (providerError) {
+    console.error("OAuth provider error:", {
+      error: providerError,
+      description: providerErrorDescription,
+    });
+
+    const providerDescription = providerErrorDescription?.startsWith(
+      "Unable to exchange external code"
+    )
+      ? "Supabase could not exchange the one-time Google authorization code. Check the Supabase Auth logs for the underlying provider error."
+      : providerErrorDescription;
+
+    return NextResponse.redirect(
+      authErrorUrl(
+        providerError === "access_denied"
+          ? "google_access_denied"
+          : "provider_sign_in_failed",
+        {
+          providerError,
+          providerDescription,
+        }
+      )
+    );
+  }
 
   if (!code) {
     return NextResponse.redirect(
-      `${origin}/auth/error`
+      authErrorUrl("missing_code")
     );
   }
 
@@ -28,7 +76,7 @@ export async function GET(request: Request) {
     );
 
     return NextResponse.redirect(
-      `${origin}/auth/error`
+      authErrorUrl("session_exchange_failed")
     );
   }
 
@@ -47,7 +95,7 @@ export async function GET(request: Request) {
     );
 
     return NextResponse.redirect(
-      `${origin}/auth/error`
+      authErrorUrl("missing_gmail_permission")
     );
   }
 
@@ -63,7 +111,7 @@ export async function GET(request: Request) {
     );
 
     return NextResponse.redirect(
-      `${origin}/auth/error`
+      authErrorUrl("token_storage_failed")
     );
   }
 

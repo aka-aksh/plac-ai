@@ -122,6 +122,35 @@ export async function GET() {
     }
 
     /*
+     * Attachment facts can only be merged after the source email has
+     * created or joined an opportunity. Do not mark the attachment as
+     * processed until that relationship exists: otherwise it would never
+     * be retried and its facts would be lost from the dashboard.
+     */
+    const {
+      data: opportunityLink,
+      error: opportunityLinkError,
+    } = await supabase
+      .from("opportunity_messages")
+      .select("opportunity_id")
+      .eq("gmail_message_id", attachment.gmail_message_id)
+      .maybeSingle();
+
+    if (opportunityLinkError) {
+      throw new Error(opportunityLinkError.message);
+    }
+
+    if (!opportunityLink) {
+      return NextResponse.json({
+        success: true,
+        processed: false,
+        deferred: true,
+        message:
+          "The source email has not been turned into an opportunity yet.",
+      });
+    }
+
+    /*
      * Download the original file
      * securely through Gmail.
      */
@@ -191,6 +220,9 @@ export async function GET() {
           extracted_text:
             extractedText,
 
+          extracted_summary:
+            attachmentExtraction.summary,
+
           processed:
             true,
 
@@ -209,35 +241,6 @@ export async function GET() {
     if (attachmentUpdateError) {
       throw new Error(
         attachmentUpdateError.message
-      );
-    }
-
-    /*
-     * Find the Gmail message and its
-     * corresponding opportunity.
-     */
-    const {
-      data: opportunityLink,
-      error: opportunityLinkError,
-    } =
-      await supabase
-        .from(
-          "opportunity_messages"
-        )
-        .select(
-          `
-          opportunity_id
-          `
-        )
-        .eq(
-          "gmail_message_id",
-          attachment.gmail_message_id
-        )
-        .maybeSingle();
-
-    if (opportunityLinkError) {
-      throw new Error(
-        opportunityLinkError.message
       );
     }
 

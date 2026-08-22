@@ -369,6 +369,12 @@ export async function GET() {
         newOpportunity;
     }
 
+    if (!opportunity) {
+      throw new Error(
+        "Opportunity could not be created or loaded"
+      );
+    }
+
     /*
      * Connect the Gmail message to the
      * opportunity.

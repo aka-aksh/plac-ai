@@ -33,6 +33,7 @@ export async function GET(
     }
 
     const { id } = await context.params;
+    const download = new URL(request.url).searchParams.get("download") === "1";
 
     if (!id) {
       return NextResponse.json(
@@ -123,7 +124,7 @@ export async function GET(
 
     headers.set(
       "Content-Disposition",
-      `inline; filename="${attachment.filename.replace(/["\\]/g, "_")}"`
+      `${download ? "attachment" : "inline"}; filename="${attachment.filename.replace(/["\\]/g, "_")}"`
     );
 
     /*

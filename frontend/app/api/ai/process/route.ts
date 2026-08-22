@@ -412,6 +412,12 @@ export async function GET() {
     /*
      * STEP 5 — LINK SOURCE EMAIL
      */
+    if (!opportunity) {
+      throw new Error(
+        "Opportunity could not be created or loaded"
+      );
+    }
+
     const {
       error: linkError,
     } = await supabase
