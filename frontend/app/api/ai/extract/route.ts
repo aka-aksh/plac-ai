@@ -43,19 +43,9 @@ function isSameOpportunity(
     return false;
   }
 
-  const existingRole =
-    normalize(candidate.role);
+  const existingRole = normalize(candidate.role);
+  const newRole = normalize(role);
 
-  const newRole =
-    normalize(role);
-
-  /*
-   * If either side has no role, do not merge
-   * purely on company name.
-   *
-   * This prevents two different jobs from the
-   * same company from accidentally becoming one.
-   */
   if (!existingRole || !newRole) {
     return false;
   }
@@ -71,8 +61,7 @@ export async function GET() {
     const {
       data: { user },
       error: userError,
-    } =
-      await supabase.auth.getUser();
+    } = await supabase.auth.getUser();
 
     if (userError || !user) {
       return NextResponse.json(
@@ -85,45 +74,34 @@ export async function GET() {
       );
     }
 
-    /*
-     * Get one AI-classified relevant email that
-     * has not yet been attached to an opportunity.
-     *
-     * Using opportunity_messages here prevents
-     * the same Gmail message from being extracted
-     * repeatedly.
-     */
     const {
       data: messages,
       error: messageError,
-    } =
-      await supabase
-        .from("gmail_messages")
-        .select(
-          `
-          id,
-          gmail_message_id,
-          gmail_thread_id,
-          sender,
-          subject,
-          body_text,
-          ai_relevant,
-          ai_classified_at,
-          received_at
-          `
-        )
-        .eq("user_id", user.id)
-        .eq("ai_relevant", true)
-        .not("ai_classified_at", "is", null)
-        .order("received_at", {
-          ascending: false,
-        })
-        .limit(20);
+    } = await supabase
+      .from("gmail_messages")
+      .select(
+        `
+        id,
+        gmail_message_id,
+        gmail_thread_id,
+        sender,
+        subject,
+        body_text,
+        ai_relevant,
+        ai_classified_at,
+        received_at
+        `
+      )
+      .eq("user_id", user.id)
+      .eq("ai_relevant", true)
+      .not("ai_classified_at", "is", null)
+      .order("received_at", {
+        ascending: false,
+      })
+      .limit(20);
 
     if (messageError) {
-      throw new Error(
-        messageError.message
-      );
+      throw new Error(messageError.message);
     }
 
     if (!messages?.length) {
@@ -178,27 +156,22 @@ export async function GET() {
         message.body_text ?? ""
       );
 
-    /*
-     * Load existing opportunities belonging
-     * ONLY to this authenticated user.
-     */
     const {
       data: candidates,
       error: candidateError,
-    } =
-      await supabase
-        .from("opportunities")
-        .select(
-          `
-          id,
-          company,
-          role,
-          source_type,
-          application_status,
-          automatic_updates
-          `
-        )
-        .eq("user_id", user.id);
+    } = await supabase
+      .from("opportunities")
+      .select(
+        `
+        id,
+        company,
+        role,
+        source_type,
+        application_status,
+        automatic_updates
+        `
+      )
+      .eq("user_id", user.id);
 
     if (candidateError) {
       throw new Error(
@@ -210,15 +183,7 @@ export async function GET() {
       | OpportunityCandidate
       | null = null;
 
-    /*
-     * First matching pass:
-     * company + role.
-     *
-     * This prevents different roles at the
-     * same company from being merged.
-     */
-    for (const candidate of
-      candidates ?? []) {
+    for (const candidate of candidates ?? []) {
       if (
         isSameOpportunity(
           candidate,
@@ -233,9 +198,10 @@ export async function GET() {
 
     if (opportunity) {
       /*
-       * Existing opportunity:
-       * update only fields that contain useful
-       * information from the new email.
+       * Existing opportunity.
+       *
+       * Only replace fields when the new email
+       * actually contains a value.
        */
       const updates: Record<
         string,
@@ -253,6 +219,9 @@ export async function GET() {
         category:
           extraction.category,
 
+        status:
+          extraction.status,
+
         ai_confidence:
           extraction.confidence,
 
@@ -261,12 +230,12 @@ export async function GET() {
 
         updated_at:
           new Date().toISOString(),
-
-        automatic_updates:
-          opportunity.automatic_updates ??
-          true,
       };
 
+      /*
+       * IMPORTANT:
+       * These fields are NOT overwritten with null.
+       */
       if (
         extraction.deadline !== null
       ) {
@@ -296,33 +265,28 @@ export async function GET() {
       }
 
       /*
-       * Never overwrite a manually controlled
-       * status.
+       * Never let AI decide whether the
+       * student applied.
+       *
+       * Keep:
+       * Not Decided / I Apply / I Applied
        */
-      if (
-        opportunity.automatic_updates
-      ) {
-        updates.application_status =
-          extraction.status;
-      }
-
       const {
         data: updatedOpportunity,
         error: updateError,
-      } =
-        await supabase
-          .from("opportunities")
-          .update(updates)
-          .eq(
-            "id",
-            opportunity.id
-          )
-          .eq(
-            "user_id",
-            user.id
-          )
-          .select()
-          .single();
+      } = await supabase
+        .from("opportunities")
+        .update(updates)
+        .eq(
+          "id",
+          opportunity.id
+        )
+        .eq(
+          "user_id",
+          user.id
+        )
+        .select()
+        .single();
 
       if (updateError) {
         throw new Error(
@@ -334,60 +298,66 @@ export async function GET() {
         updatedOpportunity;
     } else {
       /*
-       * No matching opportunity:
-       * create a new one.
+       * No matching opportunity.
+       * Create a new one.
        */
       const {
         data: newOpportunity,
         error: insertError,
-      } =
-        await supabase
-          .from("opportunities")
-          .insert({
-            user_id:
-              user.id,
+      } = await supabase
+        .from("opportunities")
+        .insert({
+          user_id:
+            user.id,
 
-            company:
-              extraction.company,
+          company:
+            extraction.company,
 
-            role:
-              extraction.role,
+          role:
+            extraction.role,
 
-            source_type:
-              extraction.source_type,
+          source_type:
+            extraction.source_type,
 
-            category:
-              extraction.category,
+          category:
+            extraction.category,
 
-            application_status:
-              extraction.status,
+          status:
+            extraction.status,
 
-            deadline:
-              extraction.deadline,
+          /*
+           * The AI does NOT decide
+           * whether the student applied.
+           */
+          application_status:
+            "Not Decided",
 
-            apply_link:
-              extraction.apply_link,
+          deadline:
+            extraction.deadline,
 
-            eligibility:
-              extraction.eligibility,
+          apply_link:
+            extraction.apply_link,
 
-            next_action:
-              extraction.next_action,
+          eligibility:
+            extraction.eligibility,
 
-            ai_confidence:
-              extraction.confidence,
+          next_action:
+            extraction.next_action,
 
-            ai_model:
-              MODEL,
+          ai_confidence:
+            extraction.confidence,
 
-            automatic_updates:
-              true,
+          ai_model:
+            MODEL,
 
-            needs_review:
-              extraction.confidence < 0.7,
-          })
-          .select()
-          .single();
+          automatic_updates:
+            true,
+
+          needs_review:
+            extraction.confidence < 0.7,
+        })
+        .select()
+        .single();
 
       if (insertError) {
         throw new Error(
@@ -400,36 +370,28 @@ export async function GET() {
     }
 
     /*
-     * Link the Gmail message to the opportunity.
-     *
-     * This gives us:
-     *
-     * ONE opportunity
-     *        ↑
-     * email 1
-     * email 2
-     * email 3
+     * Connect the Gmail message to the
+     * opportunity.
      */
     const {
       error: linkError,
-    } =
-      await supabase
-        .from(
-          "opportunity_messages"
-        )
-        .upsert(
-          {
-            opportunity_id:
-              opportunity.id,
+    } = await supabase
+      .from(
+        "opportunity_messages"
+      )
+      .upsert(
+        {
+          opportunity_id:
+            opportunity.id,
 
-            gmail_message_id:
-              message.id,
-          },
-          {
-            onConflict:
-              "opportunity_id,gmail_message_id",
-          }
-        );
+          gmail_message_id:
+            message.id,
+        },
+        {
+          onConflict:
+            "opportunity_id,gmail_message_id",
+        }
+      );
 
     if (linkError) {
       throw new Error(
@@ -442,13 +404,18 @@ export async function GET() {
       extracted: true,
 
       message: {
-        id: message.id,
+        id:
+          message.id,
+
         gmail_message_id:
           message.gmail_message_id,
+
         gmail_thread_id:
           message.gmail_thread_id,
+
         sender:
           message.sender,
+
         subject:
           message.subject,
       },
@@ -467,6 +434,11 @@ export async function GET() {
       {
         error:
           "Opportunity extraction failed",
+
+        details:
+          error instanceof Error
+            ? error.message
+            : String(error),
       },
       {
         status: 500,
