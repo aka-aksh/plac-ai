@@ -63,6 +63,7 @@ create table if not exists public.gmail_relevance_settings (
   id uuid primary key default uuid_generate_v4(),
   user_id uuid not null references auth.users(id) on delete cascade unique,
   mode text not null check (mode in ('strict', 'ai', 'smart')) default 'strict',
+  sync_scope text not null check (sync_scope in ('inbox', 'all')) default 'all',
   allowed_senders text[] default array[]::text[],
   setup_completed boolean default false not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,

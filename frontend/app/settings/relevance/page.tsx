@@ -54,21 +54,8 @@ export default function RelevanceSettingsPage() {
         .maybeSingle();
 
       if (error) {
-        // Fallback without sync_scope if column doesn't exist yet
-        const { data: fallbackData } = await supabase
-          .from("gmail_relevance_settings")
-          .select("mode, allowed_senders, setup_completed")
-          .eq("user_id", user.id)
-          .maybeSingle();
-
-        if (fallbackData) {
-          setSettings({
-            mode: (fallbackData.mode as RelevanceMode) || "smart",
-            sync_scope: "all",
-            allowed_senders: fallbackData.allowed_senders ?? [],
-            setup_completed: fallbackData.setup_completed ?? false,
-          });
-        }
+        console.error("Relevance settings load error:", error);
+        setMessage("Email scope settings are unavailable. Run the latest Supabase migration, then reload this page.");
         setLoading(false);
         return;
       }
@@ -153,7 +140,6 @@ export default function RelevanceSettingsPage() {
       return;
     }
 
-    // Try saving with sync_scope
     const { error } = await supabase.from("gmail_relevance_settings").upsert(
       {
         user_id: user.id,
@@ -169,28 +155,10 @@ export default function RelevanceSettingsPage() {
     );
 
     if (error) {
-      // Fallback without sync_scope column
-      const { error: fallbackError } = await supabase
-        .from("gmail_relevance_settings")
-        .upsert(
-          {
-            user_id: user.id,
-            mode: settings.mode,
-            allowed_senders: settings.allowed_senders,
-            setup_completed: true,
-            updated_at: new Date().toISOString(),
-          },
-          {
-            onConflict: "user_id",
-          }
-        );
-
-      if (fallbackError) {
-        console.error("Relevance settings save error:", fallbackError);
-        setMessage("Could not save settings: " + fallbackError.message);
-        setSaving(false);
-        return;
-      }
+      console.error("Relevance settings save error:", error);
+      setMessage("Could not save settings. Run the latest Supabase migration and try again.");
+      setSaving(false);
+      return;
     }
 
     setMessage("✓ Settings saved successfully.");

@@ -31,5 +31,22 @@ ALTER TABLE public.gmail_messages ADD COLUMN IF NOT EXISTS ai_reason text;
 ALTER TABLE public.gmail_messages ADD COLUMN IF NOT EXISTS ai_classified_at timestamp with time zone;
 ALTER TABLE public.gmail_messages ADD COLUMN IF NOT EXISTS relevance_status text DEFAULT 'pending';
 
--- 4. Ensure public.gmail_relevance_settings has sync_scope column
-ALTER TABLE public.gmail_relevance_settings ADD COLUMN IF NOT EXISTS sync_scope text DEFAULT 'all';
+-- 4. Ensure public.gmail_relevance_settings has a validated, persistent sync scope
+ALTER TABLE public.gmail_relevance_settings ADD COLUMN IF NOT EXISTS sync_scope text;
+UPDATE public.gmail_relevance_settings
+SET sync_scope = 'all'
+WHERE sync_scope IS NULL OR sync_scope NOT IN ('inbox', 'all');
+ALTER TABLE public.gmail_relevance_settings
+  ALTER COLUMN sync_scope SET DEFAULT 'all',
+  ALTER COLUMN sync_scope SET NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'gmail_relevance_settings_sync_scope_check'
+  ) THEN
+    ALTER TABLE public.gmail_relevance_settings
+      ADD CONSTRAINT gmail_relevance_settings_sync_scope_check
+      CHECK (sync_scope IN ('inbox', 'all'));
+  END IF;
+END $$;

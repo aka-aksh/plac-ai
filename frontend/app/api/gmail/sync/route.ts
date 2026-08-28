@@ -27,9 +27,16 @@ type GmailMessage = {
   historyId?: string;
   internalDate?: string;
   snippet?: string;
+  labelIds?: string[];
   payload?: GmailPart & {
     headers?: GmailHeader[];
   };
+};
+
+type RelevanceSettings = {
+  mode: "strict" | "ai" | "smart";
+  sync_scope: "inbox" | "all";
+  allowed_senders: string[];
 };
 
 type GmailMessageList = {
@@ -184,6 +191,70 @@ async function getGmailMessage(
   }
 
   return result.response.json();
+}
+
+async function getGmailMessageMetadata(
+  userId: string,
+  messageId: string
+): Promise<GmailMessage | null> {
+  const result = await gmailFetch(
+    userId,
+    `/messages/${messageId}?format=metadata&metadataHeaders=From`
+  );
+
+  if (!result.response.ok) {
+    return null;
+  }
+
+  return result.response.json();
+}
+
+async function getRelevanceSettings(
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+  userId: string
+): Promise<RelevanceSettings> {
+  const { data, error } = await supabase
+    .from("gmail_relevance_settings")
+    .select("mode, sync_scope, allowed_senders")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error("Unable to load email relevance settings. Run the latest Supabase migration before syncing.");
+  }
+
+  return {
+    mode: data?.mode === "strict" || data?.mode === "ai" ? data.mode : "smart",
+    sync_scope: data?.sync_scope === "inbox" ? "inbox" : "all",
+    allowed_senders: (data?.allowed_senders ?? []).map((entry: string) => entry.trim().toLowerCase()),
+  };
+}
+
+function buildGmailQuery(settings: RelevanceSettings): string | null {
+  const terms = ["newer_than:365d"];
+  if (settings.sync_scope === "inbox") terms.push("in:inbox");
+
+  if (settings.mode === "strict") {
+    if (settings.allowed_senders.length === 0) return null;
+    const senderFilters = settings.allowed_senders.map((entry) => `from:${entry}`);
+    terms.push(`{${senderFilters.join(" ")}}`);
+  }
+
+  return terms.join(" ");
+}
+
+function isAllowedMessage(message: GmailMessage, settings: RelevanceSettings): boolean {
+  if (settings.sync_scope === "inbox" && !message.labelIds?.includes("INBOX")) {
+    return false;
+  }
+
+  if (settings.mode !== "strict") return true;
+
+  const from = findHeader(message, "From")?.toLowerCase() ?? "";
+  const email = from.match(/<([^>]+)>/)?.[1] ?? from.match(/[\w.+-]+@[\w.-]+/)?.[0] ?? from;
+  return settings.allowed_senders.some((entry) =>
+    entry.includes("@") ? email === entry : email.endsWith(`@${entry}`)
+  );
 }
 
 async function getProfileHistoryId(
@@ -366,7 +437,8 @@ async function performInitialSync(
   supabase: Awaited<
     ReturnType<typeof createServerSupabaseClient>
   >,
-  userId: string
+  userId: string,
+  settings: RelevanceSettings
 ) {
   let pageToken:
     | string
@@ -374,15 +446,9 @@ async function performInitialSync(
 
   let processed = 0;
 
-  // Retrieve user's configured reading scope (inbox vs all)
-  const { data: settings } = await supabase
-    .from("gmail_relevance_settings")
-    .select("sync_scope")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  const syncScope = settings?.sync_scope || "all";
-  const scopeFilter = syncScope === "inbox" ? "in:inbox newer_than:365d" : "newer_than:365d";
+  // Strict mode without entries must read nothing, not fall back to all mail.
+  // The impossible sender query still lets us store a Gmail history checkpoint.
+  const scopeFilter = buildGmailQuery(settings) ?? "from:__placementai_no_whitelist__";
 
   do {
     const query =
@@ -487,7 +553,8 @@ async function performIncrementalSync(
     ReturnType<typeof createServerSupabaseClient>
   >,
   userId: string,
-  startHistoryId: string
+  startHistoryId: string,
+  settings: RelevanceSettings
 ) {
   let pageToken:
     | string
@@ -570,6 +637,10 @@ async function performIncrementalSync(
     await Promise.all(
       chunk.map(async (messageId) => {
         try {
+          // Metadata is enough to enforce the strict scope before any body is read.
+          const metadata = await getGmailMessageMetadata(userId, messageId);
+          if (!metadata || !isAllowedMessage(metadata, settings)) return;
+
           const message = await getGmailMessage(userId, messageId);
           if (message) {
             await saveMessage(supabase, userId, message);
@@ -662,26 +733,30 @@ export async function GET() {
     }
 
     let result;
+    const settings = await getRelevanceSettings(supabase, user.id);
 
     if (!state?.history_id) {
       result =
         await performInitialSync(
           supabase,
-          user.id
+          user.id,
+          settings
         );
     } else {
       result =
         await performIncrementalSync(
           supabase,
           user.id,
-          state.history_id
+          state.history_id,
+          settings
         );
 
       if (!result) {
         result =
           await performInitialSync(
             supabase,
-            user.id
+            user.id,
+            settings
           );
       }
     }
