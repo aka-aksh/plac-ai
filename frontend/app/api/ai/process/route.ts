@@ -212,11 +212,18 @@ export async function GET(request: Request) {
 
           if (!result.relevant) {
             return {
-              id: message.id,
-              relevant: false,
-              opportunityAction: "not_created",
-              reason: result.reason,
-              result,
+              messageId: message.id,
+              gmailMessageId: message.gmail_message_id,
+              status: "not_relevant",
+              classification: {
+                relevant: false,
+                category: result.category,
+                confidence: safeConfidence,
+                reason: result.reason,
+              },
+              extraction: result,
+              opportunityId: null,
+              failureReason: null,
             };
           }
 
@@ -336,26 +343,41 @@ export async function GET(request: Request) {
           }
 
           return {
-            id: message.id,
-            relevant: true,
-            opportunityAction,
+            messageId: message.id,
+            gmailMessageId: message.gmail_message_id,
+            status: opportunityAction,
+            classification: {
+              relevant: true,
+              category: result.category,
+              confidence: safeConfidence,
+              reason: result.reason,
+            },
+            extraction: result,
+            opportunityId: opportunity?.id ?? null,
+            failureReason: null,
             usedCompanyFallback,
             forcedNeedsReview,
-            result,
-            opportunity,
           };
         } catch (err) {
           console.error(`Error processing email ${message.id}:`, err);
-          return { id: message.id, error: err instanceof Error ? err.message : String(err) };
+          return {
+            messageId: message.id,
+            gmailMessageId: message.gmail_message_id,
+            status: "failed",
+            classification: null,
+            extraction: null,
+            opportunityId: null,
+            failureReason: err instanceof Error ? err.message : String(err),
+          };
         }
       })
     );
 
     const summary = results.reduce(
       (totals, item) => {
-        if (item.error) totals.failed += 1;
-        else if (item.opportunityAction === "created") totals.created += 1;
-        else if (item.opportunityAction === "updated") totals.updated += 1;
+        if (item.status === "failed") totals.failed += 1;
+        else if (item.status === "created") totals.created += 1;
+        else if (item.status === "updated") totals.updated += 1;
         else totals.notCreated += 1;
         if (item.forcedNeedsReview) totals.needsReview += 1;
         return totals;
