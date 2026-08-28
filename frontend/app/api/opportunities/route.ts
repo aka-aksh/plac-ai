@@ -63,7 +63,7 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("Failed to create opportunity:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to create opportunity" },
+      { error: "Failed to create opportunity" },
       { status: 500 }
     );
   }
@@ -131,7 +131,7 @@ export async function PATCH(request: Request) {
   } catch (error) {
     console.error("Failed to update opportunity:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to update opportunity" },
+      { error: "Failed to update opportunity" },
       { status: 500 }
     );
   }
@@ -171,7 +171,7 @@ export async function DELETE(request: Request) {
   } catch (error) {
     console.error("Failed to delete opportunity:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to delete opportunity" },
+      { error: "Failed to delete opportunity" },
       { status: 500 }
     );
   }

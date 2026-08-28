@@ -70,7 +70,7 @@ export default function HomePage() {
 
   if (loading) {
     return (
-      <main className="min-h-screen flex items-center justify-center bg-black text-white">
+      <main className="min-h-screen flex items-center justify-center bg-[#070b14] text-white">
         <div className="flex flex-col items-center gap-3">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent"></div>
           <p className="text-sm text-gray-400">Checking session...</p>
@@ -80,24 +80,24 @@ export default function HomePage() {
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-black text-white px-6">
-      <div className="w-full max-w-lg rounded-2xl border border-gray-800 bg-gray-950/80 p-8 sm:p-10 text-center shadow-2xl backdrop-blur-sm">
+    <main className="relative isolate min-h-screen overflow-hidden bg-[#070b14] px-6 text-white before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:bg-[radial-gradient(circle_at_15%_15%,rgba(16,185,129,0.18),transparent_30%),radial-gradient(circle_at_85%_20%,rgba(59,130,246,0.16),transparent_28%)] flex items-center justify-center">
+      <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-slate-950/80 p-8 sm:p-10 text-center shadow-2xl shadow-black/40 backdrop-blur-xl">
         <div className="mb-6 flex justify-center">
-          <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500 font-black text-black text-2xl shadow-lg shadow-emerald-950/50">
+          <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-300 to-cyan-400 font-black text-slate-950 text-2xl shadow-lg shadow-emerald-500/20">
             P
           </span>
         </div>
 
         <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight mb-2">
-          Placement <span className="text-emerald-400">AI</span>
+          Your next role starts with <span className="text-emerald-300">AI</span>
         </h1>
 
-        <p className="text-gray-400 text-sm mb-8 leading-relaxed">
-          Turn scattered placement emails and attachments into organized opportunities with automated eligibility matching.
+        <p className="text-slate-400 text-sm mb-8 leading-relaxed">
+          Connect your Google account to discover, organize, and act on placement opportunities in one focused dashboard.
         </p>
 
         {configError ? (
-          <div className="mb-6 rounded-xl border border-amber-500/50 bg-amber-950/30 p-5 text-left text-xs text-amber-200">
+          <div className="mb-6 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-5 text-left text-xs text-amber-100">
             <p className="font-bold text-sm text-amber-300 mb-2">⚙️ Setup Required</p>
             <p className="mb-3 text-gray-300">
               Create a <code className="bg-black/60 px-1.5 py-0.5 rounded text-amber-300">frontend/.env.local</code> file with your Supabase credentials:
@@ -115,10 +115,11 @@ GEMINI_API_KEY=your-gemini-api-key`}
             </p>
           </div>
         ) : (
+          <>
           <button
             onClick={signInWithGoogle}
             disabled={signingIn}
-            className="w-full rounded-xl bg-white text-black px-5 py-3.5 font-bold hover:bg-gray-200 disabled:opacity-50 transition-all flex items-center justify-center gap-3 shadow-md"
+            className="w-full rounded-xl bg-white text-slate-950 px-5 py-4 font-bold hover:-translate-y-0.5 hover:bg-emerald-50 disabled:opacity-50 transition-all duration-200 flex items-center justify-center gap-3 shadow-lg shadow-emerald-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
           >
             {signingIn ? (
               <span>Connecting to Google...</span>
@@ -146,6 +147,8 @@ GEMINI_API_KEY=your-gemini-api-key`}
               </>
             )}
           </button>
+          <p className="mt-5 text-xs leading-5 text-slate-500">Read-only Gmail access is used only to organize placement emails. You stay in control.</p>
+          </>
         )}
       </div>
     </main>

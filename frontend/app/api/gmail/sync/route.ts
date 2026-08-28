@@ -374,9 +374,19 @@ async function performInitialSync(
 
   let processed = 0;
 
+  // Retrieve user's configured reading scope (inbox vs all)
+  const { data: settings } = await supabase
+    .from("gmail_relevance_settings")
+    .select("sync_scope")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  const syncScope = settings?.sync_scope || "all";
+  const scopeFilter = syncScope === "inbox" ? "in:inbox newer_than:365d" : "newer_than:365d";
+
   do {
     const query =
-      `/messages?maxResults=100&q=newer_than:365d` +
+      `/messages?maxResults=100&q=${encodeURIComponent(scopeFilter)}` +
       (pageToken
         ? `&pageToken=${encodeURIComponent(
             pageToken
@@ -552,6 +562,7 @@ async function performIncrementalSync(
       history.nextPageToken;
   } while (pageToken);
 
+  let processed = 0;
   const messageIdArray = Array.from(messageIds);
   const CHUNK_SIZE = 8;
   for (let i = 0; i < messageIdArray.length; i += CHUNK_SIZE) {

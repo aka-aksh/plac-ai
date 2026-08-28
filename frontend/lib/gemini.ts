@@ -215,6 +215,7 @@ export type UnifiedProcessingResult = {
     | "Interview"
     | "Selection"
     | "Rejection"
+    | "Hackathon"
     | "Other Relevant"
     | "Irrelevant"
     | "Needs Review";
@@ -223,7 +224,11 @@ export type UnifiedProcessingResult = {
   source_type?: "CDC" | "Non-CDC";
   company?: string | null;
   role?: string | null;
+  roles?: string[];
   opportunity_category?: string | null;
+  is_hackathon?: boolean;
+  ctc?: string | null;
+  stipend?: string | null;
   status?:
     | "New"
     | "Applied"
@@ -245,7 +250,7 @@ const unifiedSchema = {
     relevant: {
       type: "boolean",
       description:
-        "Whether this email is relevant to a student's placement, recruitment, university career, assessment, interview, selection, rejection, or employment opportunity.",
+        "Whether this email is relevant to a student's placement, recruitment, university career, assessment, interview, selection, rejection, hackathon, or employment opportunity.",
     },
     category: {
       type: "string",
@@ -258,6 +263,7 @@ const unifiedSchema = {
         "Interview",
         "Selection",
         "Rejection",
+        "Hackathon",
         "Other Relevant",
         "Irrelevant",
         "Needs Review",
@@ -274,19 +280,38 @@ const unifiedSchema = {
     source_type: {
       type: "string",
       enum: ["CDC", "Non-CDC"],
-      description: "CDC if clearly a college CDC/campus drive, else Non-CDC.",
+      description: "CDC if from college placement office/CDC, else Non-CDC.",
+    },
+    is_hackathon: {
+      type: "boolean",
+      description: "True if this email is for a Hackathon, Coding Competition, or Case Challenge.",
     },
     company: {
       type: ["string", "null"],
-      description: "Company name (e.g. Google, TCS, Amazon). Null if irrelevant.",
+      description:
+        "The ACTUAL HIRING / RECRUITING COMPANY name (e.g. 'Chubb Business Services India', 'Spense', 'Enord', 'Whirlpool', 'Google'). NEVER use 'CDC', 'VIT', 'Placement Office', or the university name as the company name.",
     },
     role: {
       type: ["string", "null"],
-      description: "Job role/title (e.g. SDE, Data Analyst, Graduate Trainee).",
+      description: "Primary job role/title (e.g. SDE, AI Engineer, Cyber, Data Analyst).",
+    },
+    roles: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "List of all distinct job roles if multiple roles are listed in the same email (e.g. ['3D Artist Intern', 'Inventory Intern', 'Graphic Design Intern', 'Founder Office Intern']).",
     },
     opportunity_category: {
       type: ["string", "null"],
-      description: "Full-Time, Internship, Training, etc.",
+      description: "Full-Time, Super Dream Internship, Internship, Hackathon, Training, etc.",
+    },
+    ctc: {
+      type: ["string", "null"],
+      description: "CTC salary figure if mentioned (e.g. '12.1 LPA', '18 LPA').",
+    },
+    stipend: {
+      type: ["string", "null"],
+      description: "Monthly stipend if mentioned (e.g. '35,000/month', '5,000/month').",
     },
     status: {
       type: ["string", "null"],
@@ -304,19 +329,19 @@ const unifiedSchema = {
     },
     deadline: {
       type: ["string", "null"],
-      description: "Deadline formatted strictly as YYYY-MM-DD if present, else null.",
+      description: "Registration / Application deadline strictly formatted as YYYY-MM-DD if present, else null.",
     },
     apply_link: {
       type: ["string", "null"],
-      description: "URL or Google form link to apply if explicitly provided.",
+      description: "URL or Google Form link to apply or register if explicitly provided.",
     },
     eligibility: {
       type: ["string", "null"],
-      description: "Summary of cutoff CGPA, branch, or criteria mentioned.",
+      description: "Summary of cutoff CGPA, % in 10th/12th, eligible branches (CS, IT, AIML, Mechanical, etc.), and standing arrears.",
     },
     next_action: {
       type: ["string", "null"],
-      description: "Immediate action required by the student.",
+      description: "Immediate test schedule, venue, registration deadline, or instructions (e.g. 'Online test on 22nd Aug at PRP 717', 'Register before 31st Aug 5 PM').",
     },
   },
   required: ["relevant", "category", "confidence", "reason"],
@@ -332,18 +357,22 @@ export async function classifyAndExtract(
   }
 
   const systemInstruction = `
-You are the unified classification and extraction engine of Placement AI.
+You are the high-accuracy extraction engine of Placement AI.
 
-Analyze the given email and determine:
-1. Is it relevant to campus placements, jobs, recruitment drives, tests, interviews, or career opportunities?
-2. If RELEVANT, extract the company name, role, deadline (YYYY-MM-DD), apply link, eligibility, category, and recruitment stage.
-3. If IRRELEVANT (newsletters, spam, personal chats, OTPs), set relevant: false and provide a reason.
+Analyze the given email and extract all placement, recruitment, and hackathon details.
 
-RULES:
-- Never invent information not present in the email.
-- If company name is not clearly mentioned, do not guess.
-- Preserve exact dates, return format YYYY-MM-DD.
-- Return ONLY valid structured JSON.
+CRITICAL RULES FOR COMPANY NAME:
+1. NEVER output "CDC", "Career Development Centre", "Placement Office", "No Reply CDC Info", "VIT", or the college name as the company name.
+2. Search the email subject, tables ("Name of the Company: ..."), and body ("We're Hiring at [Company]", "[Company] online test is scheduled") to find the REAL hiring corporate entity (e.g. "Chubb Business Services India", "Spense", "Enord", "Whirlpool", "Google", "Microsoft").
+3. For Hackathons: Extract the official Hackathon / Challenge name (e.g. "Flipkart GRiD", "Smart India Hackathon").
+
+MULTIPLE ROLES:
+If an email lists multiple roles for the same company (e.g. "3D Artist Intern", "Inventory Intern", "Graphic Design Intern"), list ALL of them in the "roles" array so they belong to ONE company row.
+
+TEST SCHEDULE & ACTIONS:
+Extract exam dates, timings, venues, and deadlines accurately into "next_action" and "deadline".
+
+Return valid structured JSON matching the schema.
 `;
 
   const userContent = `

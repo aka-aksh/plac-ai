@@ -3,6 +3,13 @@ import { GoogleGenAI } from "@google/genai";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 
 export async function GET() {
+  // This endpoint checks secret configuration and can make a paid Gemini call.
+  // Keep it available for local setup only; it must never be an internet-facing
+  // production diagnostics oracle.
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
   const diagnostics: Record<string, { status: "ok" | "error" | "warning"; message: string }> = {};
 
   // 1. Check NEXT_PUBLIC_SUPABASE_URL

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
-import { classifyEmail } from "@/lib/gemini";
-import { extractOpportunity } from "@/lib/gemini-extract";
+import { classifyAndExtract, UnifiedProcessingResult } from "@/lib/gemini";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
@@ -18,9 +17,7 @@ function normalize(value: string | null | undefined) {
     .trim();
 }
 
-function normalizeCompany(
-  value: string | null | undefined
-) {
+function normalizeCompany(value: string | null | undefined) {
   return normalize(value)
     .replace(
       /\b(ltd|limited|inc|incorporated|llc|corp|corporation|pvt|private|technologies|technology|company|co)\b/g,
@@ -33,59 +30,40 @@ function normalizeCompany(
 function isSameOpportunity(
   candidate: OpportunityCandidate,
   company: string,
-  role: string | null
+  role: string | null | undefined
 ) {
   const sameCompany =
-    normalizeCompany(candidate.company) ===
-    normalizeCompany(company);
+    normalizeCompany(candidate.company) === normalizeCompany(company);
 
-  if (!sameCompany) {
-    return false;
-  }
+  if (!sameCompany) return false;
 
   const existingRole = normalize(candidate.role);
   const newRole = normalize(role);
 
-  if (!existingRole || !newRole) {
-    return false;
-  }
+  if (!existingRole || !newRole) return false;
 
   return existingRole === newRole;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const supabase =
-      await createServerSupabaseClient();
+    const { searchParams } = new URL(request.url);
+    const batchSize = Math.min(10, Math.max(1, Number(searchParams.get("batch") || 5)));
 
+    const supabase = await createServerSupabaseClient();
     const {
       data: { user },
       error: userError,
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        {
-          error: "Unauthorized",
-        },
-        {
-          status: 401,
-        }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    /*
-     * Find one Gmail message that:
-     * 1. Passed the user's sender/domain filter
-     * 2. Has not been AI classified yet
-     */
-    const {
-      data: message,
-      error: messageError,
-    } = await supabase
+    // Fetch batch of unclassified messages
+    const { data: messages, error: messageError } = await supabase
       .from("gmail_messages")
-      .select(
-        `
+      .select(`
         id,
         gmail_message_id,
         gmail_thread_id,
@@ -95,402 +73,176 @@ export async function GET() {
         relevance_status,
         ai_classified_at,
         received_at
-        `
-      )
+      `)
       .eq("user_id", user.id)
-      .in(
-        "relevance_status",
-        ["relevant", "pending"]
-      )
+      .in("relevance_status", ["relevant", "pending"])
       .is("ai_classified_at", null)
-      .order("received_at", {
-        ascending: false,
-      })
-      .limit(1)
-      .maybeSingle();
+      .order("received_at", { ascending: false })
+      .limit(batchSize);
 
     if (messageError) {
-      throw new Error(
-        messageError.message
-      );
+      throw new Error(messageError.message);
     }
 
-    if (!message) {
+    if (!messages || messages.length === 0) {
       return NextResponse.json({
         success: true,
         processed: false,
-        message:
-          "No new eligible email needs processing.",
+        count: 0,
+        message: "No new eligible email needs processing.",
       });
     }
 
-    /*
-     * STEP 1 — AI CLASSIFICATION
-     */
-    const classification =
-      await classifyEmail(
-        message.sender,
-        message.subject,
-        (message.body_text ?? "").slice(
-          0,
-          30000
-        )
-      );
-
-    const safeConfidence =
-      Math.max(
-        0,
-        Math.min(
-          1,
-          classification.confidence
-        )
-      );
-
-    const {
-      error: classificationSaveError,
-    } = await supabase
-      .from("gmail_messages")
-      .update({
-        ai_relevant:
-          classification.relevant,
-
-        ai_category:
-          classification.category,
-
-        ai_confidence:
-          safeConfidence,
-
-        ai_reason:
-          classification.reason,
-
-        ai_classified_at:
-          new Date().toISOString(),
-
-        ai_model:
-          MODEL,
-
-        updated_at:
-          new Date().toISOString(),
-      })
-      .eq("id", message.id)
-      .eq("user_id", user.id);
-
-    if (classificationSaveError) {
-      throw new Error(
-        classificationSaveError.message
-      );
-    }
-
-    /*
-     * If Gemini says the email is irrelevant,
-     * stop here.
-     */
-    if (!classification.relevant) {
-      return NextResponse.json({
-        success: true,
-        processed: true,
-        stage: "classification",
-        result: "irrelevant",
-        message: {
-          id: message.id,
-          sender: message.sender,
-          subject: message.subject,
-        },
-        classification,
-      });
-    }
-
-    /*
-     * STEP 2 — AI OPPORTUNITY EXTRACTION
-     */
-    const extraction =
-      await extractOpportunity(
-        message.sender,
-        message.subject,
-        (message.body_text ?? "").slice(
-          0,
-          30000
-        )
-      );
-
-    /*
-     * STEP 3 — FIND EXISTING OPPORTUNITY
-     */
-    const {
-      data: candidates,
-      error: candidateError,
-    } = await supabase
+    // Load existing opportunities for deduplication
+    const { data: candidates } = await supabase
       .from("opportunities")
-      .select(
-        `
-        id,
-        company,
-        role
-        `
-      )
+      .select("id, company, role")
       .eq("user_id", user.id);
 
-    if (candidateError) {
-      throw new Error(
-        candidateError.message
-      );
-    }
+    const liveCandidates: OpportunityCandidate[] = candidates ?? [];
 
-    let opportunity:
-      | OpportunityCandidate
-      | null = null;
+    // Process all emails in this batch in parallel with Gemini AI
+    const results = await Promise.all(
+      messages.map(async (message) => {
+        try {
+          const body = (message.body_text ?? "").slice(0, 30000);
+          const result: UnifiedProcessingResult = await classifyAndExtract(
+            message.sender,
+            message.subject,
+            body
+          );
 
-    for (const candidate of
-      candidates ?? []) {
-      if (
-        isSameOpportunity(
-          candidate,
-          extraction.company,
-          extraction.role
-        )
-      ) {
-        opportunity = candidate;
-        break;
-      }
-    }
+          const safeConfidence = Math.max(0, Math.min(1, result.confidence ?? 0.8));
 
-    /*
-     * STEP 4 — CREATE OR UPDATE
-     */
-    if (opportunity) {
-      const updates: Record<
-        string,
-        unknown
-      > = {
-        company:
-          extraction.company,
+          // Save classification to message record
+          await supabase
+            .from("gmail_messages")
+            .update({
+              ai_relevant: result.relevant,
+              ai_category: result.category,
+              ai_confidence: safeConfidence,
+              ai_reason: result.reason,
+              ai_classified_at: new Date().toISOString(),
+              ai_model: MODEL,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", message.id)
+            .eq("user_id", user.id);
 
-        role:
-          extraction.role,
+          if (!result.relevant || !result.company?.trim()) {
+            return { id: message.id, relevant: false, result };
+          }
 
-        source_type:
-          extraction.source_type,
+          // Compute combined role and category
+          const combinedRole =
+            result.roles && result.roles.length > 0
+              ? result.roles.join(" • ")
+              : result.role?.trim() || null;
 
-        category:
-          extraction.category,
+          const finalCategory =
+            result.is_hackathon || result.category === "Hackathon"
+              ? "Hackathon"
+              : result.opportunity_category || result.category || "Full-Time";
 
-        status:
-          extraction.status,
+          const ctcInfo = [
+            result.ctc ? `CTC: ${result.ctc}` : "",
+            result.stipend ? `Stipend: ${result.stipend}` : "",
+          ]
+            .filter(Boolean)
+            .join(" • ");
 
-        ai_confidence:
-          extraction.confidence,
+          // Deduplicate or insert opportunity
+          let opportunity = liveCandidates.find((c) =>
+            isSameOpportunity(c, result.company!, combinedRole)
+          );
 
-        ai_model:
-          MODEL,
+          if (opportunity) {
+            const updates: Record<string, unknown> = {
+              company: result.company,
+              role: combinedRole ?? undefined,
+              source_type: result.source_type || "Non-CDC",
+              category: finalCategory,
+              status: result.status || "New",
+              ai_confidence: safeConfidence,
+              ai_model: MODEL,
+              updated_at: new Date().toISOString(),
+            };
 
-        updated_at:
-          new Date().toISOString(),
-      };
+            if (result.deadline) updates.deadline = result.deadline;
+            if (result.apply_link) updates.apply_link = result.apply_link;
+            if (result.eligibility) updates.eligibility = result.eligibility;
+            if (result.next_action) updates.next_action = result.next_action;
+            if (ctcInfo) updates.notes = ctcInfo;
 
-      /*
-       * Never erase existing information
-       * with null from a later email.
-       */
-      if (
-        extraction.deadline !== null
-      ) {
-        updates.deadline =
-          extraction.deadline;
-      }
+            await supabase
+              .from("opportunities")
+              .update(updates)
+              .eq("id", opportunity.id)
+              .eq("user_id", user.id);
+          } else {
+            const { data: newOpp } = await supabase
+              .from("opportunities")
+              .insert({
+                user_id: user.id,
+                company: result.company.trim(),
+                role: combinedRole,
+                source_type: result.source_type || "Non-CDC",
+                category: finalCategory,
+                status: result.status || "New",
+                application_status: "Not Decided",
+                deadline: result.deadline || null,
+                apply_link: result.apply_link || null,
+                eligibility: result.eligibility || null,
+                next_action: result.next_action || null,
+                notes: ctcInfo || null,
+                ai_confidence: safeConfidence,
+                ai_model: MODEL,
+                automatic_updates: true,
+                needs_review: safeConfidence < 0.7,
+              })
+              .select("id, company, role")
+              .single();
 
-      if (
-        extraction.apply_link !== null
-      ) {
-        updates.apply_link =
-          extraction.apply_link;
-      }
+            if (newOpp) {
+              opportunity = newOpp;
+              liveCandidates.push(newOpp);
+            }
+          }
 
-      if (
-        extraction.eligibility !== null
-      ) {
-        updates.eligibility =
-          extraction.eligibility;
-      }
+          if (opportunity) {
+            await supabase
+              .from("opportunity_messages")
+              .upsert(
+                {
+                  opportunity_id: opportunity.id,
+                  gmail_message_id: message.id,
+                },
+                { onConflict: "opportunity_id,gmail_message_id" }
+              );
+          }
 
-      if (
-        extraction.next_action !== null
-      ) {
-        updates.next_action =
-          extraction.next_action;
-      }
-
-      const {
-        data: updatedOpportunity,
-        error: updateError,
-      } = await supabase
-        .from("opportunities")
-        .update(updates)
-        .eq(
-          "id",
-          opportunity.id
-        )
-        .eq(
-          "user_id",
-          user.id
-        )
-        .select()
-        .single();
-
-      if (updateError) {
-        throw new Error(
-          updateError.message
-        );
-      }
-
-      opportunity =
-        updatedOpportunity;
-    } else {
-      const {
-        data: newOpportunity,
-        error: insertError,
-      } = await supabase
-        .from("opportunities")
-        .insert({
-          user_id:
-            user.id,
-
-          company:
-            extraction.company,
-
-          role:
-            extraction.role,
-
-          source_type:
-            extraction.source_type,
-
-          category:
-            extraction.category,
-
-          status:
-            extraction.status,
-
-          application_status:
-            "Not Decided",
-
-          deadline:
-            extraction.deadline,
-
-          apply_link:
-            extraction.apply_link,
-
-          eligibility:
-            extraction.eligibility,
-
-          next_action:
-            extraction.next_action,
-
-          ai_confidence:
-            extraction.confidence,
-
-          ai_model:
-            MODEL,
-
-          automatic_updates:
-            true,
-
-          needs_review:
-            extraction.confidence < 0.7,
-        })
-        .select()
-        .single();
-
-      if (insertError) {
-        throw new Error(
-          insertError.message
-        );
-      }
-
-      opportunity =
-        newOpportunity;
-    }
-
-    /*
-     * STEP 5 — LINK SOURCE EMAIL
-     */
-    if (!opportunity) {
-      throw new Error(
-        "Opportunity could not be created or loaded"
-      );
-    }
-
-    const {
-      error: linkError,
-    } = await supabase
-      .from(
-        "opportunity_messages"
-      )
-      .upsert(
-        {
-          opportunity_id:
-            opportunity.id,
-
-          gmail_message_id:
-            message.id,
-        },
-        {
-          onConflict:
-            "opportunity_id,gmail_message_id",
+          return { id: message.id, relevant: true, result, opportunity };
+        } catch (err) {
+          console.error(`Error processing email ${message.id}:`, err);
+          return { id: message.id, error: err instanceof Error ? err.message : String(err) };
         }
-      );
-
-    if (linkError) {
-      throw new Error(
-        linkError.message
-      );
-    }
+      })
+    );
 
     return NextResponse.json({
       success: true,
       processed: true,
-      stage: "complete",
-
-      message: {
-        id:
-          message.id,
-
-        gmail_message_id:
-          message.gmail_message_id,
-
-        gmail_thread_id:
-          message.gmail_thread_id,
-
-        sender:
-          message.sender,
-
-        subject:
-          message.subject,
-      },
-
-      classification,
-
-      extraction,
-
-      opportunity,
+      count: messages.length,
+      results,
     });
   } catch (error) {
-    console.error(
-      "AI processing error:",
-      error
-    );
-
+    console.error("AI batch processing error:", error);
     return NextResponse.json(
       {
-        error:
-          "AI email processing failed",
-
-        details:
-          error instanceof Error
-            ? error.message
-            : String(error),
+        error: "AI email processing failed",
+        details: error instanceof Error ? error.message : String(error),
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
   }
 }

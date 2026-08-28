@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { timingSafeEqual } from "crypto";
 
 export const maxDuration = 60; // Allow longer execution for cron
 
@@ -7,19 +8,16 @@ export async function GET(request: Request) {
   try {
     const cronSecret = process.env.CRON_SECRET;
     const authHeader = request.headers.get("Authorization");
-    const { searchParams } = new URL(request.url);
-    const querySecret = searchParams.get("secret");
 
-    // Protect cron endpoint if CRON_SECRET is configured
-    if (cronSecret) {
-      const token = authHeader?.replace("Bearer ", "") || querySecret;
-      if (token !== cronSecret) {
-        return NextResponse.json({ error: "Unauthorized cron execution" }, { status: 401 });
-      }
+    // A cron route has service-level access. Fail closed if it is not configured,
+    // and do not accept a URL token (URLs are routinely retained in logs).
+    const token = authHeader?.match(/^Bearer (.+)$/i)?.[1];
+    if (!cronSecret || !token || !safeEqual(token, cronSecret)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     if (!supabaseUrl || !supabaseServiceKey) {
       return NextResponse.json({ error: "Supabase configuration missing" }, { status: 500 });
@@ -39,8 +37,6 @@ export async function GET(request: Request) {
     }
 
     const results = [];
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-
     for (const syncRecord of syncUsers ?? []) {
       results.push({
         userId: syncRecord.user_id,
@@ -60,9 +56,14 @@ export async function GET(request: Request) {
     return NextResponse.json(
       {
         error: "Cron sync failed",
-        details: error instanceof Error ? error.message : String(error),
       },
       { status: 500 }
     );
   }
+}
+
+function safeEqual(a: string, b: string) {
+  const aBuffer = Buffer.from(a);
+  const bBuffer = Buffer.from(b);
+  return aBuffer.length === bBuffer.length && timingSafeEqual(aBuffer, bBuffer);
 }

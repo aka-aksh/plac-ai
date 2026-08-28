@@ -44,7 +44,7 @@ export async function GET() {
   } catch (error) {
     console.error("Failed to fetch gmail messages:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to load emails" },
+      { error: "Failed to load emails" },
       { status: 500 }
     );
   }
