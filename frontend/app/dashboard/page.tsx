@@ -592,7 +592,7 @@ export default function Dashboard() {
 
       await loadDashboard();
       const skippedDetail = emailsWithoutOpportunity
-        ? ` ${emailsWithoutOpportunity} relevant email(s) did not name a company and remain in Activity.`
+        ? ` ${emailsWithoutOpportunity} non-opportunity email(s) remain in Activity.`
         : "";
       const failedDetail = failedEmails
         ? ` ${failedEmails} email(s) failed; check the server logs for the database error.`

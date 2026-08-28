@@ -45,6 +45,22 @@ function isSameOpportunity(
   return existingRole === newRole;
 }
 
+/**
+ * Relevant placement mail must remain actionable even when the model fails to
+ * populate its optional `company` field. Subjects from CDC forwards normally
+ * name the company, so retain that information rather than dropping the mail.
+ */
+function companyFromSubject(subject: string | null, gmailMessageId: string) {
+  const cleaned = (subject ?? "")
+    .replace(/^\s*((re|fwd?)\s*:\s*)+/i, "")
+    .replace(/^\s*(update|notification|announcement)\s*:\s*/i, "")
+    .replace(/\s*[-–—:]?\s*(super dream\s+)?internship\b.*$/i, "")
+    .replace(/\s*[-–—:]?\s*(placement|recruitment|registration)\b.*$/i, "")
+    .trim();
+
+  return cleaned || `Placement opportunity ${gmailMessageId.slice(-8)}`;
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -169,20 +185,21 @@ export async function GET(request: Request) {
             );
           }
 
-          if (!result.relevant || !result.company?.trim()) {
+          if (!result.relevant) {
             return {
               id: message.id,
-              relevant: result.relevant,
+              relevant: false,
               opportunityAction: "not_created",
-              // A placement update can be relevant without naming a company
-              // (for example, a generic CDC notice). It belongs in Activity,
-              // but cannot safely become a dashboard opportunity.
-              reason: result.relevant
-                ? "No hiring company could be identified in this email."
-                : result.reason,
+              reason: result.reason,
               result,
             };
           }
+
+          const usedCompanyFallback = !result.company?.trim();
+          const company = result.company?.trim() || companyFromSubject(
+            message.subject,
+            message.gmail_message_id
+          );
 
           // Compute combined role and category
           const combinedRole =
@@ -204,14 +221,14 @@ export async function GET(request: Request) {
 
           // Deduplicate or insert opportunity
           let opportunity = liveCandidates.find((c) =>
-            isSameOpportunity(c, result.company!, combinedRole)
+            isSameOpportunity(c, company, combinedRole)
           );
 
           const opportunityAction = opportunity ? "updated" : "created";
 
           if (opportunity) {
             const updates: Record<string, unknown> = {
-              company: result.company,
+              company,
               role: combinedRole ?? undefined,
               source_type: result.source_type || "Non-CDC",
               category: finalCategory,
@@ -243,7 +260,7 @@ export async function GET(request: Request) {
               .from("opportunities")
               .insert({
                 user_id: user.id,
-                company: result.company.trim(),
+                company,
                 role: combinedRole,
                 source_type: result.source_type || "Non-CDC",
                 category: finalCategory,
@@ -257,7 +274,7 @@ export async function GET(request: Request) {
                 ai_confidence: safeConfidence,
                 ai_model: MODEL,
                 automatic_updates: true,
-                needs_review: safeConfidence < 0.7,
+                needs_review: safeConfidence < 0.7 || usedCompanyFallback,
               })
               .select("id, company, role")
               .single();
@@ -296,6 +313,7 @@ export async function GET(request: Request) {
             id: message.id,
             relevant: true,
             opportunityAction,
+            usedCompanyFallback,
             result,
             opportunity,
           };
