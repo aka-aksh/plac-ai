@@ -3,7 +3,7 @@ import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { classifyEmail } from "@/lib/gemini";
 
 const MODEL =
-  "gemini-3.5-flash-lite";
+  process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
 export async function GET() {
   try {

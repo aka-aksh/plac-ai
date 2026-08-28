@@ -3,7 +3,7 @@ import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { classifyEmail } from "@/lib/gemini";
 import { extractOpportunity } from "@/lib/gemini-extract";
 
-const MODEL = "gemini-3.5-flash-lite";
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
 type OpportunityCandidate = {
   id: string;

@@ -97,33 +97,40 @@ export async function getGmailTokens(
     !data.access_token_iv ||
     !data.access_token_auth_tag
   ) {
-    throw new Error("Gmail is not connected");
+    throw new Error("Gmail is not connected. Please log out and sign in with Google.");
   }
 
-  const accessToken = decryptSecret(
-    data.access_token_encrypted,
-    data.access_token_iv,
-    data.access_token_auth_tag
-  );
+  try {
+    const accessToken = decryptSecret(
+      data.access_token_encrypted,
+      data.access_token_iv,
+      data.access_token_auth_tag
+    );
 
-  let refreshToken: string | null = null;
+    let refreshToken: string | null = null;
 
-  if (
-    data.refresh_token_encrypted &&
-    data.refresh_token_iv &&
-    data.refresh_token_auth_tag
-  ) {
-    refreshToken = decryptSecret(
-      data.refresh_token_encrypted,
-      data.refresh_token_iv,
+    if (
+      data.refresh_token_encrypted &&
+      data.refresh_token_iv &&
       data.refresh_token_auth_tag
+    ) {
+      refreshToken = decryptSecret(
+        data.refresh_token_encrypted,
+        data.refresh_token_iv,
+        data.refresh_token_auth_tag
+      );
+    }
+
+    return {
+      accessToken,
+      refreshToken,
+    };
+  } catch (decryptError) {
+    console.error("Token decryption failed:", decryptError);
+    throw new Error(
+      "Gmail session token could not be decrypted (ENCRYPTION_KEY was updated). Please log out and sign in again with Google."
     );
   }
-
-  return {
-    accessToken,
-    refreshToken,
-  };
 }
 
 export async function updateGmailAccessToken(

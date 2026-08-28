@@ -166,19 +166,21 @@ function extractBody(
 async function getGmailMessage(
   userId: string,
   messageId: string
-): Promise<GmailMessage> {
+): Promise<GmailMessage | null> {
   const result = await gmailFetch(
     userId,
     `/messages/${messageId}?format=full`
   );
 
-  if (!result.response.ok) {
-    const errorText =
-      await result.response.text();
+  if (result.response.status === 404) {
+    console.warn(`Gmail message ${messageId} was not found (deleted or inaccessible), skipping.`);
+    return null;
+  }
 
-    throw new Error(
-      `Failed to fetch Gmail message ${messageId}: ${errorText}`
-    );
+  if (!result.response.ok) {
+    const errorText = await result.response.text();
+    console.warn(`Failed to fetch Gmail message ${messageId}: ${errorText}`);
+    return null;
   }
 
   return result.response.json();
@@ -374,7 +376,7 @@ async function performInitialSync(
 
   do {
     const query =
-      `/messages?maxResults=100&q=newer_than:90d` +
+      `/messages?maxResults=100&q=newer_than:365d` +
       (pageToken
         ? `&pageToken=${encodeURIComponent(
             pageToken
@@ -396,44 +398,37 @@ async function performInitialSync(
     const list =
       (await result.response.json()) as GmailMessageList;
 
-    for (const item of
-      list.messages ?? []) {
+    const newItems = [];
+    for (const item of list.messages ?? []) {
       const exists =
         await supabase
           .from("gmail_messages")
           .select("id")
-          .eq(
-            "user_id",
-            userId
-          )
-          .eq(
-            "gmail_message_id",
-            item.id
-          )
+          .eq("user_id", userId)
+          .eq("gmail_message_id", item.id)
           .maybeSingle();
 
-      if (exists.data) {
-        /*
-         * The message is already in our database.
-         *
-         * We still continue without refetching it.
-         */
-        continue;
+      if (!exists.data) {
+        newItems.push(item);
       }
+    }
 
-      const message =
-        await getGmailMessage(
-          userId,
-          item.id
-        );
-
-      await saveMessage(
-        supabase,
-        userId,
-        message
+    const CHUNK_SIZE = 8;
+    for (let i = 0; i < newItems.length; i += CHUNK_SIZE) {
+      const chunk = newItems.slice(i, i + CHUNK_SIZE);
+      await Promise.all(
+        chunk.map(async (item) => {
+          try {
+            const message = await getGmailMessage(userId, item.id);
+            if (message) {
+              await saveMessage(supabase, userId, message);
+              processed += 1;
+            }
+          } catch (err) {
+            console.warn(`Failed to process message ${item.id}:`, err);
+          }
+        })
       );
-
-      processed += 1;
     }
 
     pageToken =
@@ -557,23 +552,23 @@ async function performIncrementalSync(
       history.nextPageToken;
   } while (pageToken);
 
-  let processed = 0;
-
-  for (const messageId of
-    messageIds) {
-    const message =
-      await getGmailMessage(
-        userId,
-        messageId
-      );
-
-    await saveMessage(
-      supabase,
-      userId,
-      message
+  const messageIdArray = Array.from(messageIds);
+  const CHUNK_SIZE = 8;
+  for (let i = 0; i < messageIdArray.length; i += CHUNK_SIZE) {
+    const chunk = messageIdArray.slice(i, i + CHUNK_SIZE);
+    await Promise.all(
+      chunk.map(async (messageId) => {
+        try {
+          const message = await getGmailMessage(userId, messageId);
+          if (message) {
+            await saveMessage(supabase, userId, message);
+            processed += 1;
+          }
+        } catch (err) {
+          console.warn(`Failed to process incremental message ${messageId}:`, err);
+        }
+      })
     );
-
-    processed += 1;
   }
 
   await supabase

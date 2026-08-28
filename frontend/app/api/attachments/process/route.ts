@@ -307,7 +307,7 @@ export async function GET() {
           attachmentExtraction.confidence,
 
         ai_model:
-          "gemini-3.5-flash-lite",
+          process.env.GEMINI_MODEL || "gemini-3.6-flash",
 
         updated_at:
           new Date().toISOString(),
