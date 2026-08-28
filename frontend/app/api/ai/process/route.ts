@@ -60,8 +60,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Fetch batch of unclassified messages
-    const { data: messages, error: messageError } = await supabase
+    // Pick messages that still have no opportunity link. This includes messages
+    // previously handled by the classify-only route: they are already known to
+    // be relevant, but still need structured extraction for the dashboard.
+    const { data: candidateMessages, error: messageError } = await supabase
       .from("gmail_messages")
       .select(`
         id,
@@ -76,20 +78,46 @@ export async function GET(request: Request) {
       `)
       .eq("user_id", user.id)
       .in("relevance_status", ["relevant", "pending"])
-      .is("ai_classified_at", null)
+      .or("ai_classified_at.is.null,ai_relevant.eq.true")
       .order("received_at", { ascending: false })
-      .limit(batchSize);
+      .limit(batchSize * 5);
 
     if (messageError) {
       throw new Error(messageError.message);
     }
 
-    if (!messages || messages.length === 0) {
+    if (!candidateMessages || candidateMessages.length === 0) {
       return NextResponse.json({
         success: true,
         processed: false,
         count: 0,
         message: "No new eligible email needs processing.",
+      });
+    }
+
+    const candidateIds = candidateMessages.map((message) => message.id);
+    const { data: existingLinks, error: linkError } = await supabase
+      .from("opportunity_messages")
+      .select("gmail_message_id")
+      .in("gmail_message_id", candidateIds);
+
+    if (linkError) {
+      throw new Error(linkError.message);
+    }
+
+    const linkedMessageIds = new Set(
+      (existingLinks ?? []).map((link) => link.gmail_message_id)
+    );
+    const messages = candidateMessages
+      .filter((message) => !linkedMessageIds.has(message.id))
+      .slice(0, batchSize);
+
+    if (messages.length === 0) {
+      return NextResponse.json({
+        success: true,
+        processed: false,
+        count: 0,
+        message: "All relevant emails have already been extracted.",
       });
     }
 

@@ -37,6 +37,7 @@ type RelevanceSettings = {
   mode: "strict" | "ai" | "smart";
   sync_scope: "inbox" | "all";
   allowed_senders: string[];
+  account_email: string | null;
 };
 
 type GmailMessageList = {
@@ -211,7 +212,8 @@ async function getGmailMessageMetadata(
 
 async function getRelevanceSettings(
   supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
-  userId: string
+  userId: string,
+  accountEmail: string | null | undefined
 ): Promise<RelevanceSettings> {
   const { data, error } = await supabase
     .from("gmail_relevance_settings")
@@ -227,6 +229,7 @@ async function getRelevanceSettings(
     mode: data?.mode === "strict" || data?.mode === "ai" ? data.mode : "smart",
     sync_scope: data?.sync_scope === "inbox" ? "inbox" : "all",
     allowed_senders: (data?.allowed_senders ?? []).map((entry: string) => entry.trim().toLowerCase()),
+    account_email: accountEmail?.trim().toLowerCase() || null,
   };
 }
 
@@ -239,25 +242,55 @@ function buildGmailQuery(
 
   if (settings.mode === "strict") {
     if (settings.allowed_senders.length === 0) return null;
-    const senderFilters = settings.allowed_senders.map((entry) => `from:${entry}`);
+    // Include the account itself so a forwarded message can be checked against
+    // its original sender after the body is fetched.
+    const sendersToCheck = [
+      ...settings.allowed_senders,
+      ...(settings.account_email ? [settings.account_email] : []),
+    ];
+    const senderFilters = Array.from(new Set(sendersToCheck)).map((entry) => `from:${entry}`);
     terms.push(`{${senderFilters.join(" ")}}`);
   }
 
   return terms.join(" ");
 }
 
-function isAllowedMessage(message: GmailMessage, settings: RelevanceSettings): boolean {
+function extractEmail(value: string): string {
+  return value.match(/<([^>]+)>/)?.[1]?.trim().toLowerCase()
+    ?? value.match(/[\w.+-]+@[\w.-]+/)?.[0]?.toLowerCase()
+    ?? value.trim().toLowerCase();
+}
+
+function senderMatchesWhitelist(sender: string, allowedSenders: string[]): boolean {
+  const email = extractEmail(sender);
+  return allowedSenders.some((entry) =>
+    entry.includes("@") ? email === entry : email.endsWith(`@${entry}`)
+  );
+}
+
+function isAllowedMetadata(message: GmailMessage, settings: RelevanceSettings): boolean {
   if (settings.sync_scope === "inbox" && !message.labelIds?.includes("INBOX")) {
     return false;
   }
 
   if (settings.mode !== "strict") return true;
 
-  const from = findHeader(message, "From")?.toLowerCase() ?? "";
-  const email = from.match(/<([^>]+)>/)?.[1] ?? from.match(/[\w.+-]+@[\w.-]+/)?.[0] ?? from;
-  return settings.allowed_senders.some((entry) =>
-    entry.includes("@") ? email === entry : email.endsWith(`@${entry}`)
-  );
+  const from = findHeader(message, "From") ?? "";
+  return senderMatchesWhitelist(from, settings.allowed_senders)
+    || (settings.account_email !== null && extractEmail(from) === settings.account_email);
+}
+
+function isAllowedFullMessage(message: GmailMessage, settings: RelevanceSettings): boolean {
+  if (!isAllowedMetadata(message, settings)) return false;
+  if (settings.mode !== "strict") return true;
+
+  const outerFrom = findHeader(message, "From") ?? "";
+  if (senderMatchesWhitelist(outerFrom, settings.allowed_senders)) return true;
+
+  // A forwarded Gmail message retains its new outer From header. Only accept
+  // it when the original From line inside the forwarded content is whitelisted.
+  const forwardedFrom = extractBody(message).match(/^From:\s*(.+)$/im)?.[1] ?? "";
+  return senderMatchesWhitelist(forwardedFrom, settings.allowed_senders);
 }
 
 async function getProfileHistoryId(
@@ -500,7 +533,7 @@ async function performInitialSync(
         chunk.map(async (item) => {
           try {
             const message = await getGmailMessage(userId, item.id);
-            if (message) {
+            if (message && isAllowedFullMessage(message, settings)) {
               await saveMessage(supabase, userId, message);
               processed += 1;
             }
@@ -643,10 +676,10 @@ async function performIncrementalSync(
         try {
           // Metadata is enough to enforce the strict scope before any body is read.
           const metadata = await getGmailMessageMetadata(userId, messageId);
-          if (!metadata || !isAllowedMessage(metadata, settings)) return;
+          if (!metadata || !isAllowedMetadata(metadata, settings)) return;
 
           const message = await getGmailMessage(userId, messageId);
-          if (message) {
+          if (message && isAllowedFullMessage(message, settings)) {
             await saveMessage(supabase, userId, message);
             processed += 1;
           }
@@ -738,7 +771,7 @@ export async function GET(request: Request) {
 
     const forceRefresh = new URL(request.url).searchParams.get("force") === "1";
     let result;
-    const settings = await getRelevanceSettings(supabase, user.id);
+    const settings = await getRelevanceSettings(supabase, user.id, user.email);
 
     // A user-triggered refresh must not depend only on Gmail history. It scans
     // recent mail in the user's selected scope, so messages delivered moments
