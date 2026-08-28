@@ -149,8 +149,8 @@ GEMINI_API_KEY=your-gemini-api-key`}
           </>
         )}
         <footer className="mt-8 flex items-center justify-center gap-5 text-xs text-slate-500">
-          <a href="#privacy" className="transition-colors hover:text-emerald-300">Privacy Policy</a>
-          <a href="#terms" className="transition-colors hover:text-emerald-300">Terms of Service</a>
+          <a href="/privacy" className="transition-colors hover:text-emerald-300">Privacy Policy</a>
+          <a href="/terms" className="transition-colors hover:text-emerald-300">Terms of Service</a>
         </footer>
       </div>
     </main>
