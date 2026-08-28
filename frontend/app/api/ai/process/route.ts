@@ -77,8 +77,13 @@ export async function GET(request: Request) {
         received_at
       `)
       .eq("user_id", user.id)
-      .in("relevance_status", ["relevant", "pending"])
-      .or("ai_classified_at.is.null,ai_relevant.eq.true")
+      // A prior classify-only run can mark a message as AI-relevant while its
+      // legacy relevance_status remains "irrelevant". Always retry those
+      // messages so a relevant email cannot be stranded in Activity only.
+      // Unclassified mail still respects the relevance pre-filter.
+      .or(
+        "ai_relevant.eq.true,and(ai_classified_at.is.null,relevance_status.in.(relevant,pending))"
+      )
       .order("received_at", { ascending: false })
       .limit(batchSize * 5);
 
@@ -143,10 +148,11 @@ export async function GET(request: Request) {
           const safeConfidence = Math.max(0, Math.min(1, result.confidence ?? 0.8));
 
           // Save classification to message record
-          await supabase
+          const { error: classificationUpdateError } = await supabase
             .from("gmail_messages")
             .update({
               ai_relevant: result.relevant,
+              relevance_status: result.relevant ? "relevant" : "irrelevant",
               ai_category: result.category,
               ai_confidence: safeConfidence,
               ai_reason: result.reason,
@@ -156,6 +162,12 @@ export async function GET(request: Request) {
             })
             .eq("id", message.id)
             .eq("user_id", user.id);
+
+          if (classificationUpdateError) {
+            throw new Error(
+              `Failed to save AI classification: ${classificationUpdateError.message}`
+            );
+          }
 
           if (!result.relevant || !result.company?.trim()) {
             return { id: message.id, relevant: false, result };
@@ -202,13 +214,19 @@ export async function GET(request: Request) {
             if (result.next_action) updates.next_action = result.next_action;
             if (ctcInfo) updates.notes = ctcInfo;
 
-            await supabase
+            const { error: opportunityUpdateError } = await supabase
               .from("opportunities")
               .update(updates)
               .eq("id", opportunity.id)
               .eq("user_id", user.id);
+
+            if (opportunityUpdateError) {
+              throw new Error(
+                `Failed to update opportunity: ${opportunityUpdateError.message}`
+              );
+            }
           } else {
-            const { data: newOpp } = await supabase
+            const { data: newOpp, error: opportunityInsertError } = await supabase
               .from("opportunities")
               .insert({
                 user_id: user.id,
@@ -231,6 +249,12 @@ export async function GET(request: Request) {
               .select("id, company, role")
               .single();
 
+            if (opportunityInsertError) {
+              throw new Error(
+                `Failed to create opportunity: ${opportunityInsertError.message}`
+              );
+            }
+
             if (newOpp) {
               opportunity = newOpp;
               liveCandidates.push(newOpp);
@@ -238,7 +262,7 @@ export async function GET(request: Request) {
           }
 
           if (opportunity) {
-            await supabase
+            const { error: opportunityLinkError } = await supabase
               .from("opportunity_messages")
               .upsert(
                 {
@@ -247,6 +271,12 @@ export async function GET(request: Request) {
                 },
                 { onConflict: "opportunity_id,gmail_message_id" }
               );
+
+            if (opportunityLinkError) {
+              throw new Error(
+                `Failed to link email to opportunity: ${opportunityLinkError.message}`
+              );
+            }
           }
 
           return { id: message.id, relevant: true, result, opportunity };

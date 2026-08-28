@@ -133,6 +133,11 @@ export async function GET() {
           ai_relevant:
             classification.relevant,
 
+          relevance_status:
+            classification.relevant
+              ? "relevant"
+              : "irrelevant",
+
           ai_category:
             classification.category,
 

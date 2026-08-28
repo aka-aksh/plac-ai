@@ -29,6 +29,7 @@ ALTER TABLE public.gmail_messages ADD COLUMN IF NOT EXISTS ai_category text;
 ALTER TABLE public.gmail_messages ADD COLUMN IF NOT EXISTS ai_confidence numeric(4, 3);
 ALTER TABLE public.gmail_messages ADD COLUMN IF NOT EXISTS ai_reason text;
 ALTER TABLE public.gmail_messages ADD COLUMN IF NOT EXISTS ai_classified_at timestamp with time zone;
+ALTER TABLE public.gmail_messages ADD COLUMN IF NOT EXISTS ai_model text;
 ALTER TABLE public.gmail_messages ADD COLUMN IF NOT EXISTS relevance_status text DEFAULT 'pending';
 
 -- 4. Ensure public.gmail_relevance_settings has a validated, persistent sync scope
