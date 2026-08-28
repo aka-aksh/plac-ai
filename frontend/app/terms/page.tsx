@@ -33,7 +33,7 @@ export default function TermsPage() {
 
           <section><h2 className="text-xl font-bold text-white">Disclaimers and liability</h2><p className="mt-3">The service is provided on an “as is” and “as available” basis to the extent permitted by law. PlacementAI disclaims warranties of merchantability, fitness for a particular purpose, and non-infringement. To the extent permitted by law, PlacementAI will not be liable for indirect, incidental, special, consequential, or punitive damages arising from your use of the service.</p></section>
 
-          <section><h2 className="text-xl font-bold text-white">Changes and contact</h2><p className="mt-3">We may update these terms by posting a revised version with a new effective date. Continued use after the update means you accept the revised terms. For questions, contact <a className="text-emerald-300 underline underline-offset-4 hover:text-emerald-200" href="mailto:legal@placementai.online">legal@placementai.online</a>.</p></section>
+          <section><h2 className="text-xl font-bold text-white">Changes and contact</h2><p className="mt-3">We may update these terms by posting a revised version with a new effective date. Continued use after the update means you accept the revised terms. For questions, contact <a className="text-emerald-300 underline underline-offset-4 hover:text-emerald-200" href="mailto:gakreyakshjeet@gmail.com">gakreyakshjeet@gmail.com</a>.</p></section>
         </div>
       </article>
     </main>
