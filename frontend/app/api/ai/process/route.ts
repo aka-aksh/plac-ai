@@ -170,7 +170,18 @@ export async function GET(request: Request) {
           }
 
           if (!result.relevant || !result.company?.trim()) {
-            return { id: message.id, relevant: false, result };
+            return {
+              id: message.id,
+              relevant: result.relevant,
+              opportunityAction: "not_created",
+              // A placement update can be relevant without naming a company
+              // (for example, a generic CDC notice). It belongs in Activity,
+              // but cannot safely become a dashboard opportunity.
+              reason: result.relevant
+                ? "No hiring company could be identified in this email."
+                : result.reason,
+              result,
+            };
           }
 
           // Compute combined role and category
@@ -195,6 +206,8 @@ export async function GET(request: Request) {
           let opportunity = liveCandidates.find((c) =>
             isSameOpportunity(c, result.company!, combinedRole)
           );
+
+          const opportunityAction = opportunity ? "updated" : "created";
 
           if (opportunity) {
             const updates: Record<string, unknown> = {
@@ -279,7 +292,13 @@ export async function GET(request: Request) {
             }
           }
 
-          return { id: message.id, relevant: true, result, opportunity };
+          return {
+            id: message.id,
+            relevant: true,
+            opportunityAction,
+            result,
+            opportunity,
+          };
         } catch (err) {
           console.error(`Error processing email ${message.id}:`, err);
           return { id: message.id, error: err instanceof Error ? err.message : String(err) };
@@ -287,10 +306,22 @@ export async function GET(request: Request) {
       })
     );
 
+    const summary = results.reduce(
+      (totals, item) => {
+        if (item.error) totals.failed += 1;
+        else if (item.opportunityAction === "created") totals.created += 1;
+        else if (item.opportunityAction === "updated") totals.updated += 1;
+        else totals.notCreated += 1;
+        return totals;
+      },
+      { created: 0, updated: 0, notCreated: 0, failed: 0 }
+    );
+
     return NextResponse.json({
       success: true,
       processed: true,
       count: messages.length,
+      summary,
       results,
     });
   } catch (error) {

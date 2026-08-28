@@ -58,6 +58,12 @@ type PipelineResult = {
   count?: number;
   error?: string;
   details?: string;
+  summary?: {
+    created: number;
+    updated: number;
+    notCreated: number;
+    failed: number;
+  };
 };
 
 const APPLICATION_STATUSES = [
@@ -551,6 +557,10 @@ export default function Dashboard() {
       await requestPipeline("/api/gmail/sync?force=1");
 
       let emailsProcessed = 0;
+      let opportunitiesCreated = 0;
+      let opportunitiesUpdated = 0;
+      let emailsWithoutOpportunity = 0;
+      let failedEmails = 0;
       setNotice(
         "⚡ Step 2/3: AI Classifying & Extracting companies in parallel..."
       );
@@ -559,7 +569,11 @@ export default function Dashboard() {
           `⚡ Step 2/3: AI analyzing batch ${run + 1} (${emailsProcessed} emails completed)...`
         );
         const result = await requestPipeline("/api/ai/process?batch=5");
-        const count = (result as { count?: number }).count ?? 0;
+        const count = result.count ?? 0;
+        opportunitiesCreated += result.summary?.created ?? 0;
+        opportunitiesUpdated += result.summary?.updated ?? 0;
+        emailsWithoutOpportunity += result.summary?.notCreated ?? 0;
+        failedEmails += result.summary?.failed ?? 0;
         if (!result.processed || count === 0) break;
         emailsProcessed += count;
         if (count < 5) break;
@@ -577,8 +591,14 @@ export default function Dashboard() {
       }
 
       await loadDashboard();
+      const skippedDetail = emailsWithoutOpportunity
+        ? ` ${emailsWithoutOpportunity} relevant email(s) did not name a company and remain in Activity.`
+        : "";
+      const failedDetail = failedEmails
+        ? ` ${failedEmails} email(s) failed; check the server logs for the database error.`
+        : "";
       setNotice(
-        `✓ Sync complete! Extracted ${emailsProcessed} emails and ${attachmentsProcessed} attachments into your dashboard.`
+        `✓ Sync complete! Created ${opportunitiesCreated} new opportunity row(s) and updated ${opportunitiesUpdated} existing row(s) from ${emailsProcessed} analyzed email(s), with ${attachmentsProcessed} attachment(s) processed.${skippedDetail}${failedDetail}`
       );
     } catch (error) {
       setNotice(
