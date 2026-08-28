@@ -61,6 +61,20 @@ function companyFromSubject(subject: string | null, gmailMessageId: string) {
   return cleaned || `Placement opportunity ${gmailMessageId.slice(-8)}`;
 }
 
+/**
+ * A model response is not allowed to silently discard an email that plainly
+ * advertises a placement event. It is retained as Needs Review so the user can
+ * see it on the dashboard even when Gemini returns a false negative.
+ */
+function hasStrongPlacementSignal(
+  subject: string | null,
+  body: string | null
+) {
+  return /\b(job|internship|hiring|campus\s+drive|placement|assessment|interview|shortlist(?:ed)?|selection|recruit(?:ment|ing)?|\bctc\b|stipend|apply|registration)\b/i.test(
+    `${subject ?? ""}\n${body ?? ""}`
+  );
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -155,11 +169,22 @@ export async function GET(request: Request) {
       messages.map(async (message) => {
         try {
           const body = (message.body_text ?? "").slice(0, 30000);
-          const result: UnifiedProcessingResult = await classifyAndExtract(
+          let result: UnifiedProcessingResult = await classifyAndExtract(
             message.sender,
             message.subject,
             body
           );
+
+          const forcedNeedsReview =
+            !result.relevant && hasStrongPlacementSignal(message.subject, body);
+          if (forcedNeedsReview) {
+            result = {
+              ...result,
+              relevant: true,
+              category: "Needs Review",
+              reason: `Needs review: Gemini marked this email irrelevant, but it contains strong placement signals. ${result.reason}`,
+            };
+          }
 
           const safeConfidence = Math.max(0, Math.min(1, result.confidence ?? 0.8));
 
@@ -274,7 +299,8 @@ export async function GET(request: Request) {
                 ai_confidence: safeConfidence,
                 ai_model: MODEL,
                 automatic_updates: true,
-                needs_review: safeConfidence < 0.7 || usedCompanyFallback,
+                needs_review:
+                  safeConfidence < 0.7 || usedCompanyFallback || forcedNeedsReview,
               })
               .select("id, company, role")
               .single();
@@ -314,6 +340,7 @@ export async function GET(request: Request) {
             relevant: true,
             opportunityAction,
             usedCompanyFallback,
+            forcedNeedsReview,
             result,
             opportunity,
           };
@@ -330,9 +357,10 @@ export async function GET(request: Request) {
         else if (item.opportunityAction === "created") totals.created += 1;
         else if (item.opportunityAction === "updated") totals.updated += 1;
         else totals.notCreated += 1;
+        if (item.forcedNeedsReview) totals.needsReview += 1;
         return totals;
       },
-      { created: 0, updated: 0, notCreated: 0, failed: 0 }
+      { created: 0, updated: 0, notCreated: 0, needsReview: 0, failed: 0 }
     );
 
     return NextResponse.json({

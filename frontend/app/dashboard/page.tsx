@@ -62,6 +62,7 @@ type PipelineResult = {
     created: number;
     updated: number;
     notCreated: number;
+    needsReview: number;
     failed: number;
   };
 };
@@ -560,6 +561,7 @@ export default function Dashboard() {
       let opportunitiesCreated = 0;
       let opportunitiesUpdated = 0;
       let emailsWithoutOpportunity = 0;
+      let emailsNeedingReview = 0;
       let failedEmails = 0;
       setNotice(
         "⚡ Step 2/3: AI Classifying & Extracting companies in parallel..."
@@ -573,6 +575,7 @@ export default function Dashboard() {
         opportunitiesCreated += result.summary?.created ?? 0;
         opportunitiesUpdated += result.summary?.updated ?? 0;
         emailsWithoutOpportunity += result.summary?.notCreated ?? 0;
+        emailsNeedingReview += result.summary?.needsReview ?? 0;
         failedEmails += result.summary?.failed ?? 0;
         if (!result.processed || count === 0) break;
         emailsProcessed += count;
@@ -597,8 +600,11 @@ export default function Dashboard() {
       const failedDetail = failedEmails
         ? ` ${failedEmails} email(s) failed; check the server logs for the database error.`
         : "";
+      const reviewDetail = emailsNeedingReview
+        ? ` ${emailsNeedingReview} opportunity row(s) need review.`
+        : "";
       setNotice(
-        `✓ Sync complete! Created ${opportunitiesCreated} new opportunity row(s) and updated ${opportunitiesUpdated} existing row(s) from ${emailsProcessed} analyzed email(s), with ${attachmentsProcessed} attachment(s) processed.${skippedDetail}${failedDetail}`
+        `✓ Sync complete! Created ${opportunitiesCreated} new opportunity row(s) and updated ${opportunitiesUpdated} existing row(s) from ${emailsProcessed} analyzed email(s), with ${attachmentsProcessed} attachment(s) processed.${reviewDetail}${skippedDetail}${failedDetail}`
       );
     } catch (error) {
       setNotice(
