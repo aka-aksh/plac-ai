@@ -31,7 +31,7 @@ export default function PrivacyPage() {
 
           <section><h2 className="text-xl font-bold text-white">Your choices</h2><p className="mt-3">You can revoke PlacementAI&apos;s Google access through your Google Account settings. Revoking access stops future Gmail access, though previously synced information may remain in PlacementAI until it is deleted. You may request access, correction, or deletion of your account data by contacting us.</p></section>
 
-          <section><h2 className="text-xl font-bold text-white">Changes and contact</h2><p className="mt-3">We may update this policy when our practices or legal obligations change. We will post the updated effective date on this page. For privacy questions or requests, contact <a className="text-emerald-300 underline underline-offset-4 hover:text-emerald-200" href="mailto:privacy@placementai.online">privacy@placementai.online</a>.</p></section>
+          <section><h2 className="text-xl font-bold text-white">Changes and contact</h2><p className="mt-3">We may update this policy when our practices or legal obligations change. We will post the updated effective date on this page. For privacy questions or requests, contact <a className="text-emerald-300 underline underline-offset-4 hover:text-emerald-200" href="mailto:gakreyakshjeet@gmail.com">gakreyakshjeet@gmail.com</a>.</p></section>
         </div>
       </article>
     </main>
