@@ -351,8 +351,8 @@ export default function Dashboard() {
   );
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [eligibilityFilter, setEligibilityFilter] = useState<string>("all");
-  const [sortBy, setSortBy] = useState<"deadline" | "received" | "company">(
-    "deadline"
+  const [sortBy, setSortBy] = useState<"deadline" | "received" | "received_oldest" | "company">(
+    "received"
   );
 
   // Modal states
@@ -548,7 +548,7 @@ export default function Dashboard() {
     setNotice("⚡ Step 1/3: Fetching placement emails from Gmail...");
 
     try {
-      await requestPipeline("/api/gmail/sync");
+      await requestPipeline("/api/gmail/sync?force=1");
 
       let emailsProcessed = 0;
       setNotice(
@@ -749,6 +749,12 @@ export default function Dashboard() {
           return (
             new Date(b.received_at || b.updated_at).getTime() -
             new Date(a.received_at || a.updated_at).getTime()
+          );
+        }
+        if (sortBy === "received_oldest") {
+          return (
+            new Date(a.received_at || a.updated_at).getTime() -
+            new Date(b.received_at || b.updated_at).getTime()
           );
         }
         // deadline
@@ -1009,11 +1015,12 @@ export default function Dashboard() {
 
             <select
               value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
+              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
               className="rounded-xl border border-gray-800 bg-gray-900 px-3 py-1.5 text-xs font-semibold text-gray-300 focus:border-emerald-500 focus:outline-none"
             >
+              <option value="received">Sort by Date: Newest First</option>
+              <option value="received_oldest">Sort by Date: Oldest First</option>
               <option value="deadline">Sort: Nearest Deadline</option>
-              <option value="received">Sort: Time Email Came</option>
               <option value="company">Sort: Company (A-Z)</option>
             </select>
           </div>

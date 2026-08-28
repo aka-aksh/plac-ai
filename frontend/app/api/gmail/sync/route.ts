@@ -230,8 +230,11 @@ async function getRelevanceSettings(
   };
 }
 
-function buildGmailQuery(settings: RelevanceSettings): string | null {
-  const terms = ["newer_than:365d"];
+function buildGmailQuery(
+  settings: RelevanceSettings,
+  recentDays = 365
+): string | null {
+  const terms = [`newer_than:${recentDays}d`];
   if (settings.sync_scope === "inbox") terms.push("in:inbox");
 
   if (settings.mode === "strict") {
@@ -438,7 +441,8 @@ async function performInitialSync(
     ReturnType<typeof createServerSupabaseClient>
   >,
   userId: string,
-  settings: RelevanceSettings
+  settings: RelevanceSettings,
+  recentDays = 365
 ) {
   let pageToken:
     | string
@@ -448,7 +452,7 @@ async function performInitialSync(
 
   // Strict mode without entries must read nothing, not fall back to all mail.
   // The impossible sender query still lets us store a Gmail history checkpoint.
-  const scopeFilter = buildGmailQuery(settings) ?? "from:__placementai_no_whitelist__";
+  const scopeFilter = buildGmailQuery(settings, recentDays) ?? "from:__placementai_no_whitelist__";
 
   do {
     const query =
@@ -683,7 +687,7 @@ async function performIncrementalSync(
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const supabase =
       await createServerSupabaseClient();
@@ -732,15 +736,20 @@ export async function GET() {
       );
     }
 
+    const forceRefresh = new URL(request.url).searchParams.get("force") === "1";
     let result;
     const settings = await getRelevanceSettings(supabase, user.id);
 
-    if (!state?.history_id) {
+    // A user-triggered refresh must not depend only on Gmail history. It scans
+    // recent mail in the user's selected scope, so messages delivered moments
+    // before clicking Sync & Process are included immediately.
+    if (forceRefresh || !state?.history_id) {
       result =
         await performInitialSync(
           supabase,
           user.id,
-          settings
+          settings,
+          forceRefresh ? 14 : 365
         );
     } else {
       result =
@@ -756,7 +765,8 @@ export async function GET() {
           await performInitialSync(
             supabase,
             user.id,
-            settings
+            settings,
+            14
           );
       }
     }
