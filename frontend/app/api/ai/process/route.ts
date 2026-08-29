@@ -75,6 +75,28 @@ function hasStrongPlacementSignal(
   );
 }
 
+
+/**
+ * Gemini can return HTTP 429 when the free-tier request quota is exhausted.
+ * This is intentionally treated as a stop condition rather than repeatedly
+ * retrying, because the reported quota is a daily free-tier quota.
+ */
+function isGeminiQuotaError(error: unknown): boolean {
+  const message =
+    error instanceof Error ? error.message : String(error);
+
+  return (
+    /429/.test(message) ||
+    /RESOURCE_EXHAUSTED/i.test(message) ||
+    /quota exceeded/i.test(message) ||
+    /GenerateRequestsPerDayPerModel-FreeTier/i.test(message)
+  );
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -164,231 +186,379 @@ export async function GET(request: Request) {
 
     const liveCandidates: OpportunityCandidate[] = candidates ?? [];
 
-    // Process all emails in this batch in parallel with Gemini AI
-    const results = await Promise.all(
-      messages.map(async (message) => {
-        try {
-          const body = (message.body_text ?? "").slice(0, 30000);
-          let result: UnifiedProcessingResult = await classifyAndExtract(
+    /*
+     * Process emails SEQUENTIALLY rather than with Promise.all().
+     *
+     * This prevents multiple Gemini requests from being fired at the same
+     * time. If Gemini reports quota exhaustion (HTTP 429), stop immediately.
+     * Unprocessed emails are intentionally left eligible for a later run.
+     */
+    const results: Array<Record<string, unknown>> = [];
+    let quotaExhausted = false;
+
+    for (const message of messages) {
+      try {
+        const body = (message.body_text ?? "").slice(0, 30000);
+
+        let result: UnifiedProcessingResult =
+          await classifyAndExtract(
             message.sender,
             message.subject,
             body
           );
 
-          const forcedNeedsReview =
-            !result.relevant && hasStrongPlacementSignal(message.subject, body);
-          if (forcedNeedsReview) {
-            result = {
-              ...result,
-              relevant: true,
-              category: "Needs Review",
-              reason: `Needs review: Gemini marked this email irrelevant, but it contains strong placement signals. ${result.reason}`,
-            };
-          }
-
-          const safeConfidence = Math.max(0, Math.min(1, result.confidence ?? 0.8));
-
-          // Save classification to message record
-          const { error: classificationUpdateError } = await supabase
-            .from("gmail_messages")
-            .update({
-              ai_relevant: result.relevant,
-              relevance_status: result.relevant ? "relevant" : "irrelevant",
-              ai_category: result.category,
-              ai_confidence: safeConfidence,
-              ai_reason: result.reason,
-              ai_classified_at: new Date().toISOString(),
-              ai_model: MODEL,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", message.id)
-            .eq("user_id", user.id);
-
-          if (classificationUpdateError) {
-            throw new Error(
-              `Failed to save AI classification: ${classificationUpdateError.message}`
-            );
-          }
-
-          if (!result.relevant) {
-            return {
-              messageId: message.id,
-              gmailMessageId: message.gmail_message_id,
-              status: "not_relevant",
-              classification: {
-                relevant: false,
-                category: result.category,
-                confidence: safeConfidence,
-                reason: result.reason,
-              },
-              extraction: result,
-              opportunityId: null,
-              failureReason: null,
-            };
-          }
-
-          const usedCompanyFallback = !result.company?.trim();
-          const company = result.company?.trim() || companyFromSubject(
+        const forcedNeedsReview =
+          !result.relevant &&
+          hasStrongPlacementSignal(
             message.subject,
-            message.gmail_message_id
+            body
           );
 
-          // Compute combined role and category
-          const combinedRole =
-            result.roles && result.roles.length > 0
-              ? result.roles.join(" • ")
-              : result.role?.trim() || null;
+        if (forcedNeedsReview) {
+          result = {
+            ...result,
+            relevant: true,
+            category: "Needs Review",
+            reason:
+              `Needs review: Gemini marked this email irrelevant, ` +
+              `but it contains strong placement signals. ` +
+              `${result.reason}`,
+          };
+        }
 
-          const finalCategory =
-            result.is_hackathon || result.category === "Hackathon"
-              ? "Hackathon"
-              : result.opportunity_category || result.category || "Full-Time";
+        const safeConfidence = Math.max(
+          0,
+          Math.min(
+            1,
+            result.confidence ?? 0.8
+          )
+        );
 
-          const ctcInfo = [
-            result.ctc ? `CTC: ${result.ctc}` : "",
-            result.stipend ? `Stipend: ${result.stipend}` : "",
-          ]
-            .filter(Boolean)
-            .join(" • ");
+        // Save classification to message record
+        const {
+          error: classificationUpdateError,
+        } = await supabase
+          .from("gmail_messages")
+          .update({
+            ai_relevant: result.relevant,
+            relevance_status: result.relevant
+              ? "relevant"
+              : "irrelevant",
+            ai_category: result.category,
+            ai_confidence: safeConfidence,
+            ai_reason: result.reason,
+            ai_classified_at:
+              new Date().toISOString(),
+            ai_model: MODEL,
+            updated_at:
+              new Date().toISOString(),
+          })
+          .eq("id", message.id)
+          .eq("user_id", user.id);
 
-          // Deduplicate or insert opportunity
-          let opportunity = liveCandidates.find((c) =>
-            isSameOpportunity(c, company, combinedRole)
+        if (classificationUpdateError) {
+          throw new Error(
+            `Failed to save AI classification: ` +
+              `${classificationUpdateError.message}`
           );
+        }
 
-          const opportunityAction = opportunity ? "updated" : "created";
-
-          if (opportunity) {
-            const updates: Record<string, unknown> = {
-              company,
-              role: combinedRole ?? undefined,
-              source_type: result.source_type || "Non-CDC",
-              category: finalCategory,
-              status: result.status || "New",
-              ai_confidence: safeConfidence,
-              ai_model: MODEL,
-              updated_at: new Date().toISOString(),
-            };
-
-            if (result.deadline) updates.deadline = result.deadline;
-            if (result.apply_link) updates.apply_link = result.apply_link;
-            if (result.eligibility) updates.eligibility = result.eligibility;
-            if (result.next_action) updates.next_action = result.next_action;
-            if (ctcInfo) updates.notes = ctcInfo;
-
-            const { error: opportunityUpdateError } = await supabase
-              .from("opportunities")
-              .update(updates)
-              .eq("id", opportunity.id)
-              .eq("user_id", user.id);
-
-            if (opportunityUpdateError) {
-              throw new Error(
-                `Failed to update opportunity: ${opportunityUpdateError.message}`
-              );
-            }
-          } else {
-            const { data: newOpp, error: opportunityInsertError } = await supabase
-              .from("opportunities")
-              .insert({
-                user_id: user.id,
-                company,
-                role: combinedRole,
-                source_type: result.source_type || "Non-CDC",
-                category: finalCategory,
-                status: result.status || "New",
-                application_status: "Not Decided",
-                deadline: result.deadline || null,
-                apply_link: result.apply_link || null,
-                eligibility: result.eligibility || null,
-                next_action: result.next_action || null,
-                notes: ctcInfo || null,
-                ai_confidence: safeConfidence,
-                ai_model: MODEL,
-                automatic_updates: true,
-                needs_review:
-                  safeConfidence < 0.7 || usedCompanyFallback || forcedNeedsReview,
-              })
-              .select("id, company, role")
-              .single();
-
-            if (opportunityInsertError) {
-              throw new Error(
-                `Failed to create opportunity: ${opportunityInsertError.message}`
-              );
-            }
-
-            if (newOpp) {
-              opportunity = newOpp;
-              liveCandidates.push(newOpp);
-            }
-          }
-
-          if (opportunity) {
-            const { error: opportunityLinkError } = await supabase
-              .from("opportunity_messages")
-              .upsert(
-                {
-                  opportunity_id: opportunity.id,
-                  gmail_message_id: message.id,
-                },
-                { onConflict: "opportunity_id,gmail_message_id" }
-              );
-
-            if (opportunityLinkError) {
-              throw new Error(
-                `Failed to link email to opportunity: ${opportunityLinkError.message}`
-              );
-            }
-          }
-
-          return {
+        if (!result.relevant) {
+          results.push({
             messageId: message.id,
-            gmailMessageId: message.gmail_message_id,
-            status: opportunityAction,
+            gmailMessageId:
+              message.gmail_message_id,
+            status: "not_relevant",
             classification: {
-              relevant: true,
+              relevant: false,
               category: result.category,
               confidence: safeConfidence,
               reason: result.reason,
             },
             extraction: result,
-            opportunityId: opportunity?.id ?? null,
-            failureReason: null,
-            usedCompanyFallback,
-            forcedNeedsReview,
-          };
-        } catch (err) {
-          console.error(`Error processing email ${message.id}:`, err);
-          return {
-            messageId: message.id,
-            gmailMessageId: message.gmail_message_id,
-            status: "failed",
-            classification: null,
-            extraction: null,
             opportunityId: null,
-            failureReason: err instanceof Error ? err.message : String(err),
-          };
+            failureReason: null,
+          });
+
+          continue;
         }
-      })
-    );
+
+        const usedCompanyFallback =
+          !result.company?.trim();
+
+        const company =
+          result.company?.trim() ||
+          companyFromSubject(
+            message.subject,
+            message.gmail_message_id
+          );
+
+        // Compute combined role and category
+        const combinedRole =
+          result.roles &&
+          result.roles.length > 0
+            ? result.roles.join(" • ")
+            : result.role?.trim() || null;
+
+        const finalCategory =
+          result.is_hackathon ||
+          result.category === "Hackathon"
+            ? "Hackathon"
+            : result.opportunity_category ||
+              result.category ||
+              "Full-Time";
+
+        const ctcInfo = [
+          result.ctc
+            ? `CTC: ${result.ctc}`
+            : "",
+          result.stipend
+            ? `Stipend: ${result.stipend}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" • ");
+
+        // Deduplicate or insert opportunity
+        let opportunity =
+          liveCandidates.find((c) =>
+            isSameOpportunity(
+              c,
+              company,
+              combinedRole
+            )
+          );
+
+        const opportunityAction =
+          opportunity ? "updated" : "created";
+
+        if (opportunity) {
+          const updates: Record<string, unknown> = {
+            company,
+            role: combinedRole ?? undefined,
+            source_type:
+              result.source_type ||
+              "Non-CDC",
+            category: finalCategory,
+            status:
+              result.status || "New",
+            ai_confidence:
+              safeConfidence,
+            ai_model: MODEL,
+            updated_at:
+              new Date().toISOString(),
+          };
+
+          if (result.deadline)
+            updates.deadline =
+              result.deadline;
+          if (result.apply_link)
+            updates.apply_link =
+              result.apply_link;
+          if (result.eligibility)
+            updates.eligibility =
+              result.eligibility;
+          if (result.next_action)
+            updates.next_action =
+              result.next_action;
+          if (ctcInfo)
+            updates.notes = ctcInfo;
+
+          const {
+            error:
+              opportunityUpdateError,
+          } = await supabase
+            .from("opportunities")
+            .update(updates)
+            .eq("id", opportunity.id)
+            .eq("user_id", user.id);
+
+          if (opportunityUpdateError) {
+            throw new Error(
+              `Failed to update opportunity: ` +
+                `${opportunityUpdateError.message}`
+            );
+          }
+        } else {
+          const {
+            data: newOpp,
+            error:
+              opportunityInsertError,
+          } = await supabase
+            .from("opportunities")
+            .insert({
+              user_id: user.id,
+              company,
+              role: combinedRole,
+              source_type:
+                result.source_type ||
+                "Non-CDC",
+              category: finalCategory,
+              status:
+                result.status || "New",
+              application_status:
+                "Not Decided",
+              deadline:
+                result.deadline || null,
+              apply_link:
+                result.apply_link || null,
+              eligibility:
+                result.eligibility || null,
+              next_action:
+                result.next_action || null,
+              notes:
+                ctcInfo || null,
+              ai_confidence:
+                safeConfidence,
+              ai_model: MODEL,
+              automatic_updates:
+                true,
+              needs_review:
+                safeConfidence < 0.7 ||
+                usedCompanyFallback ||
+                forcedNeedsReview,
+            })
+            .select(
+              "id, company, role"
+            )
+            .single();
+
+          if (opportunityInsertError) {
+            throw new Error(
+              `Failed to create opportunity: ` +
+                `${opportunityInsertError.message}`
+            );
+          }
+
+          if (newOpp) {
+            opportunity = newOpp;
+            liveCandidates.push(newOpp);
+          }
+        }
+
+        if (opportunity) {
+          const {
+            error:
+              opportunityLinkError,
+          } = await supabase
+            .from("opportunity_messages")
+            .upsert(
+              {
+                opportunity_id:
+                  opportunity.id,
+                gmail_message_id:
+                  message.id,
+              },
+              {
+                onConflict:
+                  "opportunity_id,gmail_message_id",
+              }
+            );
+
+          if (opportunityLinkError) {
+            throw new Error(
+              `Failed to link email to opportunity: ` +
+                `${opportunityLinkError.message}`
+            );
+          }
+        }
+
+        results.push({
+          messageId: message.id,
+          gmailMessageId:
+            message.gmail_message_id,
+          status: opportunityAction,
+          classification: {
+            relevant: true,
+            category: result.category,
+            confidence: safeConfidence,
+            reason: result.reason,
+          },
+          extraction: result,
+          opportunityId:
+            opportunity?.id ?? null,
+          failureReason: null,
+          usedCompanyFallback,
+          forcedNeedsReview,
+        });
+      } catch (error) {
+        if (isGeminiQuotaError(error)) {
+          quotaExhausted = true;
+
+          console.warn(
+            `Gemini quota exhausted while processing ` +
+              `${message.id}. Stopping current batch.`
+          );
+
+          // Do not mark this message as irrelevant or failed.
+          // It remains eligible for the next run.
+          break;
+        }
+
+        console.error(
+          `Error processing email ${message.id}:`,
+          error
+        );
+
+        results.push({
+          messageId: message.id,
+          gmailMessageId:
+            message.gmail_message_id,
+          status: "failed",
+          classification: null,
+          extraction: null,
+          opportunityId: null,
+          failureReason:
+            getErrorMessage(error),
+        });
+      }
+    }
 
     const summary = results.reduce(
-      (totals, item) => {
-        if (item.status === "failed") totals.failed += 1;
-        else if (item.status === "created") totals.created += 1;
-        else if (item.status === "updated") totals.updated += 1;
-        else totals.notCreated += 1;
-        if (item.forcedNeedsReview) totals.needsReview += 1;
+      (
+        totals: {
+          created: number;
+          updated: number;
+          notCreated: number;
+          needsReview: number;
+          failed: number;
+        },
+        item
+      ) => {
+        if (item.status === "failed") {
+          totals.failed += 1;
+        } else if (item.status === "created") {
+          totals.created += 1;
+        } else if (item.status === "updated") {
+          totals.updated += 1;
+        } else {
+          totals.notCreated += 1;
+        }
+
+        if (item.forcedNeedsReview) {
+          totals.needsReview += 1;
+        }
+
         return totals;
       },
-      { created: 0, updated: 0, notCreated: 0, needsReview: 0, failed: 0 }
+      {
+        created: 0,
+        updated: 0,
+        notCreated: 0,
+        needsReview: 0,
+        failed: 0,
+      }
     );
 
     return NextResponse.json({
       success: true,
       processed: true,
-      count: messages.length,
+      count: results.length,
+      selected: messages.length,
+      hasMore:
+        quotaExhausted ||
+        messages.length < candidateMessages.length,
+      quotaExhausted,
       summary,
       results,
     });
